@@ -1,4 +1,4 @@
-# Player ELO (Market + Age Adjusted)
+# Player Ranking (Market + Age Adjusted)
 
 Attacker-focused, config-driven player ranking model that compares observed player performance to an expectation built from:
 
