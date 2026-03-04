@@ -1,0 +1,2 @@
+# Override config to enable player-vs-team relative updates.
+use_player_vs_team_relative_update: true

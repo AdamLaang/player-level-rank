@@ -20,6 +20,7 @@ class MarketAgeAdjustedEloConfig:
     home_advantage_mode: str = "symmetric"  # symmetric|home_only
 
     beta_mv: float = 18.0
+    beta_mv_team: float = 0.0
     beta_age: float = 1.2
     peak_age_by_position: Dict[str, float] = field(
         default_factory=lambda: dict(DEFAULT_PEAK_AGE_BY_POSITION)
@@ -31,8 +32,16 @@ class MarketAgeAdjustedEloConfig:
         "league",
         "position_group",
     )
+    team_market_value_normalization_level: Tuple[str, ...] = (
+        "season",
+        "league",
+        "team_id",
+        "position_group",
+    )
     min_group_size_for_mv_norm: int = 30
+    min_group_size_for_team_mv_norm: int = 8
     mv_winsor_limits: Tuple[float, float] = (-3.0, 3.0)
+    use_team_market_value_context: bool = False
 
     position_filter: Tuple[str, ...] = ("ATT",)
     min_minutes_played: float = 1.0
@@ -43,6 +52,7 @@ class MarketAgeAdjustedEloConfig:
     minutes_scale_updates: bool = True
 
     performance_target: str = "scored_binary"  # scored_binary|goals_per_90_capped
+    use_player_vs_team_relative_update: bool = False
 
     team_elo_home_pre_col: Optional[str] = None
     team_elo_away_pre_col: Optional[str] = None
@@ -75,6 +85,10 @@ class MarketAgeAdjustedEloConfig:
             values["market_value_normalization_level"] = tuple(
                 values["market_value_normalization_level"]
             )
+        if "team_market_value_normalization_level" in values:
+            values["team_market_value_normalization_level"] = tuple(
+                values["team_market_value_normalization_level"]
+            )
         if "position_filter" in values:
             values["position_filter"] = tuple(values["position_filter"])
 
@@ -89,6 +103,8 @@ class MarketAgeAdjustedEloConfig:
             raise ValueError("player_k_factor must be >= 0")
         if self.min_group_size_for_mv_norm < 1:
             raise ValueError("min_group_size_for_mv_norm must be >= 1")
+        if self.min_group_size_for_team_mv_norm < 1:
+            raise ValueError("min_group_size_for_team_mv_norm must be >= 1")
         if self.home_advantage_mode not in {"symmetric", "home_only"}:
             raise ValueError("home_advantage_mode must be one of {'symmetric', 'home_only'}")
         if self.train_split_frac <= 0 or self.train_split_frac >= 1:
@@ -105,6 +121,30 @@ class MarketAgeAdjustedEloConfig:
         base = tuple(self.market_value_normalization_level)
         fallbacks = [base]
 
+        if "league" in base:
+            fallbacks.append(tuple(c for c in base if c != "league"))
+        if "season" in base:
+            fallbacks.append(tuple(c for c in base if c != "season"))
+        if "position_group" not in base:
+            fallbacks.append(("position_group",))
+        else:
+            fallbacks.append(("position_group",))
+
+        deduped = []
+        for lvl in fallbacks:
+            if not lvl:
+                continue
+            if lvl not in deduped:
+                deduped.append(lvl)
+        return tuple(deduped)
+
+    @property
+    def team_market_value_levels(self) -> Tuple[Tuple[str, ...], ...]:
+        base = tuple(self.team_market_value_normalization_level)
+        fallbacks = [base]
+
+        if "team_id" in base:
+            fallbacks.append(tuple(c for c in base if c != "team_id"))
         if "league" in base:
             fallbacks.append(tuple(c for c in base if c != "league"))
         if "season" in base:

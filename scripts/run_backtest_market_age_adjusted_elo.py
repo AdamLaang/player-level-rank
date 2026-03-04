@@ -94,6 +94,11 @@ def main() -> None:
         help="Comma-separated beta_age values for grid search",
     )
     parser.add_argument(
+        "--beta-mv-team-grid",
+        default="0",
+        help="Comma-separated beta_mv_team values for grid search",
+    )
+    parser.add_argument(
         "--player-k-grid",
         default="20",
         help="Comma-separated player K-factor values for grid search",
@@ -124,6 +129,11 @@ def main() -> None:
         "--beta-age-bounds",
         default="0,3",
         help="Lower/upper bounds for beta_age when using Bayesian optimization",
+    )
+    parser.add_argument(
+        "--beta-mv-team-bounds",
+        default="0,0",
+        help="Lower/upper bounds for beta_mv_team when using Bayesian optimization",
     )
     parser.add_argument(
         "--player-k-bounds",
@@ -172,6 +182,7 @@ def main() -> None:
     if args.grid_search:
         if args.search_strategy == "grid":
             beta_mv_grid = _parse_float_grid(args.beta_mv_grid)
+            beta_mv_team_grid = _parse_float_grid(args.beta_mv_team_grid)
             beta_age_grid = _parse_float_grid(args.beta_age_grid)
             player_k_grid = _parse_float_grid(args.player_k_grid)
             grid_results = run_grid_search_market_age_adjusted_elo(
@@ -179,6 +190,7 @@ def main() -> None:
                 fixtures_df=fixtures_df,
                 config=config,
                 beta_mv_grid=beta_mv_grid,
+                beta_mv_team_grid=beta_mv_team_grid,
                 beta_age_grid=beta_age_grid,
                 player_k_grid=player_k_grid,
                 objective_split=args.objective_split,
@@ -198,6 +210,7 @@ def main() -> None:
             print(grid_results["quality_summary"])
         else:
             beta_mv_bounds = _parse_float_bounds(args.beta_mv_bounds)
+            beta_mv_team_bounds = _parse_float_bounds(args.beta_mv_team_bounds)
             beta_age_bounds = _parse_float_bounds(args.beta_age_bounds)
             player_k_bounds = _parse_float_bounds(args.player_k_bounds)
             bayes_results = run_bayesian_optimization_market_age_adjusted_elo(
@@ -205,6 +218,7 @@ def main() -> None:
                 fixtures_df=fixtures_df,
                 config=config,
                 beta_mv_bounds=beta_mv_bounds,
+                beta_mv_team_bounds=beta_mv_team_bounds,
                 beta_age_bounds=beta_age_bounds,
                 player_k_bounds=player_k_bounds,
                 n_initial_points=args.bayes_initial_points,

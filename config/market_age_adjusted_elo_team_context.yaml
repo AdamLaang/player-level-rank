@@ -1,0 +1,9 @@
+# Override config to enable team-context market-value adjustment.
+use_team_market_value_context: true
+beta_mv_team: 10.0
+team_market_value_normalization_level:
+  - season
+  - league
+  - team_id
+  - position_group
+min_group_size_for_team_mv_norm: 8

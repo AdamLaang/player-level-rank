@@ -202,8 +202,10 @@ class TestMarketAgeAdjustedElo(unittest.TestCase):
         eff = compute_effective_player_rating(
             player_elo_pre=1500,
             z_mv=1.5,
+            z_mv_team_context=0.0,
             age_peak_distance_sq=4,
             beta_mv=18.0,
+            beta_mv_team=0.0,
             beta_age=1.2,
             use_market_age_adjustment=True,
         )
@@ -216,8 +218,10 @@ class TestMarketAgeAdjustedElo(unittest.TestCase):
         eff_off = compute_effective_player_rating(
             player_elo_pre=player_elo,
             z_mv=2.5,
+            z_mv_team_context=1.0,
             age_peak_distance_sq=16,
             beta_mv=18.0,
+            beta_mv_team=5.0,
             beta_age=1.2,
             use_market_age_adjustment=False,
         )
@@ -273,6 +277,7 @@ class TestMarketAgeAdjustedElo(unittest.TestCase):
             fixtures_df=fixtures,
             config=cfg,
             beta_mv_grid=[0.0, 8.0],
+            beta_mv_team_grid=[0.0],
             beta_age_grid=[0.0, 1.2],
             player_k_grid=[10.0, 20.0],
             objective_split="test",
@@ -285,13 +290,76 @@ class TestMarketAgeAdjustedElo(unittest.TestCase):
         self.assertIn("best_params", search)
         self.assertIsNotNone(search["best_params"])
         self.assertTrue(
-            {"beta_mv", "beta_age", "player_k_factor", "objective_value"}.issubset(
+            {"beta_mv", "beta_mv_team", "beta_age", "player_k_factor", "objective_value"}.issubset(
                 search["grid_results"].columns
             )
         )
+        self.assertIn("beta_mv_team", search["best_params"])
         self.assertIn("player_k_factor", search["best_params"])
         self.assertIn("best_model_backtest", search)
         self.assertIn("variant_metrics", search["best_model_backtest"])
+
+    def test_player_vs_team_relative_update_flag(self) -> None:
+        fixtures, players = self._sample_inputs()
+        cfg_base = MarketAgeAdjustedEloConfig(
+            min_group_size_for_mv_norm=1,
+            train_split_frac=0.5,
+            validation_split_frac=0.25,
+            use_market_age_adjustment=False,
+            player_k_factor=20.0,
+            use_player_vs_team_relative_update=False,
+        )
+        cfg_rel = MarketAgeAdjustedEloConfig(
+            min_group_size_for_mv_norm=1,
+            train_split_frac=0.5,
+            validation_split_frac=0.25,
+            use_market_age_adjustment=False,
+            player_k_factor=20.0,
+            use_player_vs_team_relative_update=True,
+        )
+
+        res_base = run_backtest_market_age_adjusted_elo(players_df=players, fixtures_df=fixtures, config=cfg_base)
+        res_rel = run_backtest_market_age_adjusted_elo(players_df=players, fixtures_df=fixtures, config=cfg_rel)
+
+        base_out = res_base["variant_outputs"]["baseline"]
+        rel_out = res_rel["variant_outputs"]["baseline"]
+        self.assertTrue(
+            {"team_expected_score", "team_observed_score", "team_residual", "player_vs_team_residual"}.issubset(
+                rel_out.columns
+            )
+        )
+        # Relative update mode should generally produce different player post-ratings.
+        self.assertFalse(np.allclose(base_out["player_elo_post"].to_numpy(), rel_out["player_elo_post"].to_numpy()))
+
+    def test_team_market_value_context_dimension(self) -> None:
+        fixtures, players = self._sample_inputs()
+        cfg = MarketAgeAdjustedEloConfig(
+            min_group_size_for_mv_norm=1,
+            min_group_size_for_team_mv_norm=1,
+            train_split_frac=0.5,
+            validation_split_frac=0.25,
+            use_team_market_value_context=True,
+            beta_mv_team=8.0,
+        )
+        results = run_backtest_market_age_adjusted_elo(players_df=players, fixtures_df=fixtures, config=cfg)
+        self.assertIn("z_mv_team_summary", results)
+        market_age = results["variant_outputs"]["market_age"]
+        self.assertIn("market_value_team_adjustment", market_age.columns)
+
+        grid = run_grid_search_market_age_adjusted_elo(
+            players_df=players,
+            fixtures_df=fixtures,
+            config=cfg,
+            beta_mv_grid=[0.0],
+            beta_mv_team_grid=[0.0, 8.0],
+            beta_age_grid=[0.0],
+            player_k_grid=[20.0],
+            objective_split="test",
+            objective_metric="log_loss",
+            rerun_best_backtest=False,
+        )
+        self.assertEqual(len(grid["grid_results"]), 2)
+        self.assertEqual(grid["grid_results"]["beta_mv_team"].nunique(), 2)
 
     def test_bayesian_optimization_beta_mv_beta_age(self) -> None:
         fixtures, players = self._sample_inputs()
@@ -305,6 +373,7 @@ class TestMarketAgeAdjustedElo(unittest.TestCase):
             fixtures_df=fixtures,
             config=cfg,
             beta_mv_bounds=(0.0, 12.0),
+            beta_mv_team_bounds=(0.0, 0.0),
             beta_age_bounds=(0.0, 2.0),
             player_k_bounds=(5.0, 30.0),
             n_initial_points=5,
@@ -322,9 +391,18 @@ class TestMarketAgeAdjustedElo(unittest.TestCase):
         self.assertGreaterEqual(len(search["search_results"]), 5)
         self.assertIn("best_params", search)
         self.assertIsNotNone(search["best_params"])
+        self.assertIn("beta_mv_team", search["best_params"])
         self.assertIn("player_k_factor", search["best_params"])
         self.assertTrue(
-            {"beta_mv", "beta_age", "player_k_factor", "objective_value", "stage", "iteration"}.issubset(
+            {
+                "beta_mv",
+                "beta_mv_team",
+                "beta_age",
+                "player_k_factor",
+                "objective_value",
+                "stage",
+                "iteration",
+            }.issubset(
                 search["search_results"].columns
             )
         )

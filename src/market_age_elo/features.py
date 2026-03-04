@@ -311,6 +311,8 @@ def build_player_match_modeling_table(
         "fixture_id",
         "home_name",
         "away_name",
+        "home_goals",
+        "away_goals",
         "state",
         "starting_at",
         "league",
@@ -326,6 +328,8 @@ def build_player_match_modeling_table(
             "league": "fixture_league",
             "season": "fixture_season",
             "country": "fixture_country",
+            "home_goals": "fixture_home_goals",
+            "away_goals": "fixture_away_goals",
         }
     )
 
@@ -377,6 +381,16 @@ def build_player_match_modeling_table(
         df["away_team_elo_pre"],
         df["home_team_elo_pre"],
     )
+
+    home_goals = pd.to_numeric(df.get("fixture_home_goals"), errors="coerce")
+    away_goals = pd.to_numeric(df.get("fixture_away_goals"), errors="coerce")
+    team_observed = np.where(
+        home_goals > away_goals,
+        np.where(df["is_home"], 1.0, 0.0),
+        np.where(home_goals < away_goals, np.where(df["is_home"], 0.0, 1.0), 0.5),
+    )
+    missing_score = home_goals.isna() | away_goals.isna()
+    df["team_observed_score"] = np.where(missing_score, np.nan, team_observed)
 
     goals = pd.to_numeric(df.get("goals"), errors="coerce").fillna(0.0)
     if cfg.performance_target == "goals_per_90_capped":

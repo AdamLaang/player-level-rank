@@ -1,0 +1,43 @@
+use_market_age_adjustment: true
+elo_scale: 400
+home_advantage: 40
+home_advantage_mode: symmetric
+beta_mv: 18.0
+beta_mv_team: 0.0
+beta_age: 1.2
+peak_age_by_position:
+  GK: 29
+  DEF: 27
+  MID: 27
+  ATT: 26
+fallback_peak_age: 27
+market_value_normalization_level:
+  - season
+  - league
+  - position_group
+team_market_value_normalization_level:
+  - season
+  - league
+  - team_id
+  - position_group
+min_group_size_for_mv_norm: 30
+min_group_size_for_team_mv_norm: 8
+mv_winsor_limits:
+  - -3
+  - 3
+use_team_market_value_context: true
+position_filter:
+  - ATT
+min_minutes_played: 1
+fixture_state_for_updates: Full Time
+initial_player_elo: 1500
+player_k_factor: 20
+minutes_scale_updates: true
+performance_target: scored_binary
+use_player_vs_team_relative_update: false
+fallback_team_elo_initial: 1500
+fallback_team_elo_k: 20
+fallback_team_elo_home_advantage: 40
+train_split_frac: 0.7
+validation_split_frac: 0.15
+experiment_id: market_age_adjusted_elo_att_only

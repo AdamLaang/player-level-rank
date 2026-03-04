@@ -1,12 +1,66 @@
 # Player ELO (Market + Age Adjusted)
 
-This repository now includes an attacker-focused, config-driven player ELO pipeline with optional age and market-value adjusted expectation.
+Attacker-focused, config-driven player ranking model that compares observed player performance to an expectation built from:
 
-# Documentation and model formulation
+- player pre-match ranking
+- age relative to position peak
+- market value context (optional, position-normalized and team-context-normalized options)
+- opponent team strength and home advantage
 
-The full model formulation, training and evaluation strategy can be found in /docs
+The full mathematical report and evaluation details are in `docs/`.
 
-## Run backtest
+## Model Summary
+
+For each player-match row:
+
+```text
+R_eff = R_player_pre
+      + beta_mv * z_mv
+      + beta_mv_team * z_mv_team_context
+      - beta_age * (age - peak_age_pos)^2
+```
+
+```text
+E = 1 / (1 + 10^(-(R_eff + H - R_opp_pre) / elo_scale))
+residual = S_observed - E
+```
+
+where `S_observed` is the player performance target (`scored_binary` by default).
+
+## How Ranking Updates Work
+
+The post-match update is:
+
+```text
+R_post = R_pre + K_eff * (S_observed - E)
+```
+
+with:
+
+- `K_eff = player_k_factor * min(minutes_played/90, 1)` when minute-scaling is enabled
+- optional team-relative mode:
+  - update signal becomes `(S_player - E_player) - (S_team - E_team)`
+
+## How to Interpret Results
+
+- `expected_score`: model expectation for the player in that match
+- `performance_residual > 0`: overperformance vs expectation
+- `performance_residual < 0`: underperformance vs expectation
+- `effective_player_rating`: pre-match ranking after age/MV adjustments
+- `market_value_adjustment`, `market_value_team_adjustment`, `age_adjustment`: decomposition of what shifted ranking expectation
+
+## Example Plot (Mohamed Salah)
+
+Raw + smoothed player ranking over time, with market value and age (age on the lowest panel):
+
+![Mohamed Salah Player Ranking Timeline](docs/assets/mohamed_salah_player_ranking_timeline.png)
+
+Interactive version:
+- `outputs/plots/mohamed_salah_player_ranking_timeline_20260304.html`
+
+## How To Use
+
+### Run backtest
 
 ```bash
 python3 scripts/run_backtest_market_age_adjusted_elo.py \
@@ -16,7 +70,7 @@ python3 scripts/run_backtest_market_age_adjusted_elo.py \
   --output-dir outputs/market_age_adjusted_elo
 ```
 
-## Run beta grid search
+### Run beta grid search
 
 ```bash
 python3 scripts/run_backtest_market_age_adjusted_elo.py \
@@ -25,6 +79,7 @@ python3 scripts/run_backtest_market_age_adjusted_elo.py \
   --config config/market_age_adjusted_elo.yaml \
   --grid-search \
   --beta-mv-grid "0,6,12,18,24,30" \
+  --beta-mv-team-grid "0,5,10,15" \
   --beta-age-grid "0,0.6,1.2,1.8,2.4" \
   --player-k-grid "10,20,30" \
   --objective-split validation \
@@ -32,7 +87,7 @@ python3 scripts/run_backtest_market_age_adjusted_elo.py \
   --output-dir outputs/market_age_adjusted_elo_grid
 ```
 
-## Run Bayesian optimization (advanced search)
+### Run Bayesian optimization (advanced search)
 
 ```bash
 python3 scripts/run_backtest_market_age_adjusted_elo.py \
@@ -42,6 +97,7 @@ python3 scripts/run_backtest_market_age_adjusted_elo.py \
   --grid-search \
   --search-strategy bayes \
   --beta-mv-bounds "0,30" \
+  --beta-mv-team-bounds "0,20" \
   --beta-age-bounds "0,3" \
   --player-k-bounds "5,40" \
   --bayes-initial-points 10 \
@@ -52,22 +108,33 @@ python3 scripts/run_backtest_market_age_adjusted_elo.py \
   --output-dir outputs/market_age_adjusted_elo_bayes
 ```
 
-## Core implemented functions
+### Plot player ranking timeline
 
-- `build_player_match_modeling_table(...)`
-- `compute_player_age_at_match(...)`
-- `assign_position_group(...)`
-- `compute_log_market_value(...)`
-- `compute_market_value_zscore(...)`
-- `compute_age_peak_distance_sq(...)`
-- `compute_effective_player_rating(...)`
-- `compute_expected_player_score(...)`
-- `compute_player_residual(...)`
-- `update_player_elo(...)`
-- `run_backtest_market_age_adjusted_elo(...)`
+```bash
+python3 scripts/plot_player_elo_timeline.py \
+  --input-csv outputs/market_age_adjusted_elo_grid_wide_mv_k_rerun_20260304/best_model_backtest/player_match_outputs_market_age.csv \
+  --player-id 4125 \
+  --ranking-col player_elo_post \
+  --smooth-window 7 \
+  --backend plotly \
+  --output-path outputs/plots/mohamed_salah_player_ranking_timeline_20260304.html
+```
+
+### Overlay mode (single figure, multi-axis)
+
+```bash
+python3 scripts/plot_player_elo_timeline.py \
+  --input-csv outputs/market_age_adjusted_elo_grid_wide_mv_k_rerun_20260304/best_model_backtest/player_match_outputs_market_age.csv \
+  --player-name "Mohamed Salah" \
+  --backend plotly \
+  --overlay \
+  --output-path outputs/plots/mohamed_salah_overlay.html
+```
 
 ## Notes
 
 - Scope is attacker-only by default (`position_filter: [ATT]`).
 - Fixture-level precomputed team ELO is used when present; otherwise fixture team ELO pre-ratings are derived sequentially from results.
 - Market-value normalization is fit on training split only to avoid leakage.
+- Set `use_team_market_value_context: true` to add a second market-value context normalized within a team-aware grouping (`season+league+team_id+position_group` by default), with coefficient `beta_mv_team`.
+- Set `use_player_vs_team_relative_update: true` in config to update player ELO using player residual relative to team residual (`(S_player-E_player) - (S_team-E_team)`).

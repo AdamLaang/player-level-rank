@@ -35,8 +35,10 @@ def compute_age_peak_distance_sq(
 def compute_effective_player_rating(
     player_elo_pre: Any,
     z_mv: Any,
+    z_mv_team_context: Any,
     age_peak_distance_sq: Any,
     beta_mv: float,
+    beta_mv_team: float,
     beta_age: float,
     use_market_age_adjustment: bool = True,
 ) -> Any:
@@ -44,15 +46,24 @@ def compute_effective_player_rating(
         return player_elo_pre
 
     z_mv_clean = 0.0 if z_mv is None or pd.isna(z_mv) else z_mv
+    z_mv_team_clean = (
+        0.0 if z_mv_team_context is None or pd.isna(z_mv_team_context) else z_mv_team_context
+    )
     age_clean = 0.0 if age_peak_distance_sq is None or pd.isna(age_peak_distance_sq) else age_peak_distance_sq
 
     if isinstance(player_elo_pre, pd.Series):
         elo = pd.to_numeric(player_elo_pre, errors="coerce")
         z = pd.to_numeric(z_mv_clean, errors="coerce").fillna(0.0)
+        z_team = pd.to_numeric(z_mv_team_clean, errors="coerce").fillna(0.0)
         age_dist = pd.to_numeric(age_clean, errors="coerce").fillna(0.0)
-        return elo + (beta_mv * z) - (beta_age * age_dist)
+        return elo + (beta_mv * z) + (beta_mv_team * z_team) - (beta_age * age_dist)
 
-    return float(player_elo_pre) + (beta_mv * float(z_mv_clean)) - (beta_age * float(age_clean))
+    return (
+        float(player_elo_pre)
+        + (beta_mv * float(z_mv_clean))
+        + (beta_mv_team * float(z_mv_team_clean))
+        - (beta_age * float(age_clean))
+    )
 
 
 def compute_expected_player_score(
@@ -138,7 +149,12 @@ def run_player_elo_updates(
     effective_ratings = []
     expected_scores = []
     residuals = []
+    team_expected_scores = []
+    team_observed_scores = []
+    team_residuals = []
+    player_vs_team_residuals = []
     mv_adjustments = []
+    mv_team_adjustments = []
     age_adjustments = []
 
     for row in df.itertuples(index=False):
@@ -147,16 +163,23 @@ def run_player_elo_updates(
 
         age_dist = getattr(row, "age_peak_distance_sq", 0.0)
         z_mv = getattr(row, "z_mv", 0.0)
+        z_mv_team = getattr(row, "z_mv_team_context", 0.0)
         if pd.isna(age_dist):
             age_dist = 0.0
         if pd.isna(z_mv):
             z_mv = 0.0
+        if pd.isna(z_mv_team):
+            z_mv_team = 0.0
+        if not cfg.use_team_market_value_context:
+            z_mv_team = 0.0
 
         effective = compute_effective_player_rating(
             pre,
             z_mv,
+            z_mv_team,
             age_dist,
             beta_mv=cfg.beta_mv,
+            beta_mv_team=cfg.beta_mv_team,
             beta_age=cfg.beta_age,
             use_market_age_adjustment=cfg.use_market_age_adjustment,
         )
@@ -170,17 +193,42 @@ def run_player_elo_updates(
             home_advantage_mode=cfg.home_advantage_mode,
         )
 
+        team_expected = compute_expected_player_score(
+            effective_player_rating=getattr(row, "team_rating_pre"),
+            opponent_rating_pre=getattr(row, "opponent_rating_pre"),
+            is_home=getattr(row, "is_home"),
+            home_advantage=cfg.home_advantage,
+            elo_scale=cfg.elo_scale,
+            home_advantage_mode=cfg.home_advantage_mode,
+        )
+        team_observed = getattr(row, "team_observed_score", np.nan)
+        if pd.isna(team_observed):
+            team_residual = 0.0
+        else:
+            team_residual = float(team_observed) - float(team_expected)
+
         observed = getattr(row, "observed_performance_score")
         residual = compute_player_residual(observed, expected)
 
-        post = update_player_elo(
-            player_elo_pre=pre,
-            observed_score=observed,
-            expected_score=expected,
-            k_factor=cfg.player_k_factor,
-            minutes_played=getattr(row, "minutes_played", None),
-            minutes_scale_updates=cfg.minutes_scale_updates,
-        )
+        if cfg.use_player_vs_team_relative_update:
+            adjusted_observed = float(observed) - team_residual
+            post = update_player_elo(
+                player_elo_pre=pre,
+                observed_score=adjusted_observed,
+                expected_score=expected,
+                k_factor=cfg.player_k_factor,
+                minutes_played=getattr(row, "minutes_played", None),
+                minutes_scale_updates=cfg.minutes_scale_updates,
+            )
+        else:
+            post = update_player_elo(
+                player_elo_pre=pre,
+                observed_score=observed,
+                expected_score=expected,
+                k_factor=cfg.player_k_factor,
+                minutes_played=getattr(row, "minutes_played", None),
+                minutes_scale_updates=cfg.minutes_scale_updates,
+            )
 
         if bool(getattr(row, "is_update_eligible", True)):
             ratings[pid] = post
@@ -192,12 +240,21 @@ def run_player_elo_updates(
         effective_ratings.append(float(effective))
         expected_scores.append(float(expected))
         residuals.append(float(residual))
+        team_expected_scores.append(float(team_expected))
+        team_observed_scores.append(float(team_observed) if not pd.isna(team_observed) else np.nan)
+        team_residuals.append(float(team_residual))
+        player_vs_team_residuals.append(float(residual) - float(team_residual))
 
         if cfg.use_market_age_adjustment:
             mv_adjustments.append(cfg.beta_mv * float(z_mv))
+            if cfg.use_team_market_value_context:
+                mv_team_adjustments.append(cfg.beta_mv_team * float(z_mv_team))
+            else:
+                mv_team_adjustments.append(0.0)
             age_adjustments.append(-cfg.beta_age * float(age_dist))
         else:
             mv_adjustments.append(0.0)
+            mv_team_adjustments.append(0.0)
             age_adjustments.append(0.0)
 
     df["player_elo_pre"] = player_elo_pre
@@ -205,8 +262,13 @@ def run_player_elo_updates(
     df["effective_player_rating"] = effective_ratings
     df["expected_score"] = expected_scores
     df["performance_residual"] = residuals
+    df["team_expected_score"] = team_expected_scores
+    df["team_observed_score"] = team_observed_scores
+    df["team_residual"] = team_residuals
+    df["player_vs_team_residual"] = player_vs_team_residuals
     df["is_overperforming"] = df["performance_residual"] > 0
     df["market_value_adjustment"] = mv_adjustments
+    df["market_value_team_adjustment"] = mv_team_adjustments
     df["age_adjustment"] = age_adjustments
 
     return df
