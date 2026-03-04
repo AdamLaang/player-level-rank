@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 import json
+import math
+import warnings
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence
 
 import numpy as np
 import pandas as pd
+from sklearn.exceptions import ConvergenceWarning
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import ConstantKernel, Matern, WhiteKernel
 
 from .config import MarketAgeAdjustedEloConfig, as_config
 from .features import (
     MarketValueNormalizer,
     build_player_match_modeling_table,
-    summarize_data_quality,
 )
 from .model import compute_age_peak_distance_sq, run_player_elo_updates
 
@@ -280,6 +284,102 @@ def _evaluate_variants(
     }
 
 
+def _validate_objective(objective_split: str, objective_metric: str) -> tuple[str, str]:
+    split = str(objective_split).strip().lower()
+    metric = str(objective_metric).strip().lower()
+
+    valid_splits = {"train", "validation", "test", "all"}
+    if split not in valid_splits:
+        raise ValueError(f"objective_split must be one of {sorted(valid_splits)}")
+
+    valid_metrics = {"log_loss", "brier_score", "mean_residual"}
+    if metric not in valid_metrics:
+        raise ValueError(f"objective_metric must be one of {sorted(valid_metrics)}")
+
+    return split, metric
+
+
+def _objective_value_from_raw(raw: float, objective_metric: str) -> float:
+    if pd.isna(raw):
+        return np.nan
+    if objective_metric == "mean_residual":
+        return abs(float(raw))
+    return float(raw)
+
+
+def _evaluate_parameter_candidate(
+    modeling_table: pd.DataFrame,
+    cfg: MarketAgeAdjustedEloConfig,
+    beta_mv: float,
+    beta_age: float,
+    player_k_factor: float,
+    objective_split: str,
+    objective_metric: str,
+    *,
+    tag: str,
+) -> Dict[str, Any]:
+    variant_cfg = replace(
+        cfg,
+        use_market_age_adjustment=True,
+        beta_mv=float(beta_mv),
+        beta_age=float(beta_age),
+        player_k_factor=float(player_k_factor),
+        experiment_id=(
+            f"{cfg.experiment_id}_{tag}_mv{float(beta_mv):g}_"
+            f"age{float(beta_age):g}_k{float(player_k_factor):g}"
+        ),
+    )
+    variant_df = run_player_elo_updates(modeling_table, config=variant_cfg)
+    metric_table = pd.DataFrame(_metric_rows(variant_df, tag)).set_index("split")
+
+    row: Dict[str, Any] = {
+        "beta_mv": float(beta_mv),
+        "beta_age": float(beta_age),
+        "player_k_factor": float(player_k_factor),
+    }
+    for split in ("train", "validation", "test", "all"):
+        if split not in metric_table.index:
+            row[f"{split}_rows"] = 0
+            row[f"{split}_log_loss"] = np.nan
+            row[f"{split}_brier_score"] = np.nan
+            row[f"{split}_mean_residual"] = np.nan
+            continue
+        split_metrics = metric_table.loc[split]
+        row[f"{split}_rows"] = int(split_metrics["rows"])
+        row[f"{split}_log_loss"] = float(split_metrics["log_loss"])
+        row[f"{split}_brier_score"] = float(split_metrics["brier_score"])
+        row[f"{split}_mean_residual"] = float(split_metrics["mean_residual"])
+
+    objective_raw = row.get(f"{objective_split}_{objective_metric}", np.nan)
+    row["objective_split"] = objective_split
+    row["objective_metric"] = objective_metric
+    row["objective_raw"] = objective_raw
+    row["objective_value"] = _objective_value_from_raw(objective_raw, objective_metric)
+    return row
+
+
+def _normal_cdf(values: np.ndarray) -> np.ndarray:
+    return 0.5 * (1.0 + np.vectorize(math.erf)(values / math.sqrt(2.0)))
+
+
+def _normal_pdf(values: np.ndarray) -> np.ndarray:
+    return (1.0 / math.sqrt(2.0 * math.pi)) * np.exp(-0.5 * values**2)
+
+
+def _expected_improvement(
+    mu: np.ndarray,
+    sigma: np.ndarray,
+    best_observed: float,
+    xi: float,
+) -> np.ndarray:
+    sigma_safe = np.maximum(sigma, 1e-12)
+    improvement = best_observed - mu - xi
+    z = improvement / sigma_safe
+    ei = improvement * _normal_cdf(z) + sigma_safe * _normal_pdf(z)
+    ei[sigma <= 1e-12] = 0.0
+    return ei
+
+
 def run_backtest_market_age_adjusted_elo(
     players_df: Optional[pd.DataFrame] = None,
     fixtures_df: Optional[pd.DataFrame] = None,
@@ -329,32 +429,28 @@ def run_grid_search_market_age_adjusted_elo(
     config: Optional[Mapping[str, Any] | MarketAgeAdjustedEloConfig] = None,
     beta_mv_grid: Optional[Sequence[float]] = None,
     beta_age_grid: Optional[Sequence[float]] = None,
+    player_k_grid: Optional[Sequence[float]] = None,
     objective_split: str = "validation",
     objective_metric: str = "log_loss",
     rerun_best_backtest: bool = True,
 ) -> Dict[str, Any]:
     cfg = as_config(config)
-    objective_split = str(objective_split).strip().lower()
-    objective_metric = str(objective_metric).strip().lower()
-
-    valid_splits = {"train", "validation", "test", "all"}
-    if objective_split not in valid_splits:
-        raise ValueError(f"objective_split must be one of {sorted(valid_splits)}")
-
-    valid_metrics = {"log_loss", "brier_score", "mean_residual"}
-    if objective_metric not in valid_metrics:
-        raise ValueError(f"objective_metric must be one of {sorted(valid_metrics)}")
+    objective_split, objective_metric = _validate_objective(objective_split, objective_metric)
 
     if players_df is None or fixtures_df is None:
         players_df, fixtures_df = _load_default_data()
 
     mv_values = list(beta_mv_grid) if beta_mv_grid is not None else [0.0, 6.0, 12.0, 18.0, 24.0, 30.0]
     age_values = list(beta_age_grid) if beta_age_grid is not None else [0.0, 0.6, 1.2, 1.8, 2.4]
-    if not mv_values or not age_values:
-        raise ValueError("beta_mv_grid and beta_age_grid must each contain at least one value")
+    k_values = list(player_k_grid) if player_k_grid is not None else [float(cfg.player_k_factor)]
+    if not mv_values or not age_values or not k_values:
+        raise ValueError("beta_mv_grid, beta_age_grid, and player_k_grid must each contain at least one value")
 
     mv_values = [float(v) for v in mv_values]
     age_values = [float(v) for v in age_values]
+    k_values = [float(v) for v in k_values]
+    if min(k_values) < 0:
+        raise ValueError("player_k_grid must be non-negative")
 
     prepared = _prepare_modeling_table(players_df, fixtures_df, cfg)
     modeling_table = prepared["modeling_table"]
@@ -363,44 +459,21 @@ def run_grid_search_market_age_adjusted_elo(
 
     for beta_mv in mv_values:
         for beta_age in age_values:
-            variant_cfg = replace(
-                cfg,
-                use_market_age_adjustment=True,
-                beta_mv=beta_mv,
-                beta_age=beta_age,
-                experiment_id=f"{cfg.experiment_id}_mv{beta_mv:g}_age{beta_age:g}",
-            )
-            variant_df = run_player_elo_updates(modeling_table, config=variant_cfg)
-            metric_table = pd.DataFrame(_metric_rows(variant_df, "grid")).set_index("split")
-
-            row: Dict[str, Any] = {"beta_mv": beta_mv, "beta_age": beta_age}
-            for split in ("train", "validation", "test", "all"):
-                if split not in metric_table.index:
-                    row[f"{split}_rows"] = 0
-                    row[f"{split}_log_loss"] = np.nan
-                    row[f"{split}_brier_score"] = np.nan
-                    row[f"{split}_mean_residual"] = np.nan
-                    continue
-                split_metrics = metric_table.loc[split]
-                row[f"{split}_rows"] = int(split_metrics["rows"])
-                row[f"{split}_log_loss"] = float(split_metrics["log_loss"])
-                row[f"{split}_brier_score"] = float(split_metrics["brier_score"])
-                row[f"{split}_mean_residual"] = float(split_metrics["mean_residual"])
-
-            objective_raw = row.get(f"{objective_split}_{objective_metric}", np.nan)
-            row["objective_split"] = objective_split
-            row["objective_metric"] = objective_metric
-            row["objective_raw"] = objective_raw
-            if pd.isna(objective_raw):
-                row["objective_value"] = np.nan
-            elif objective_metric == "mean_residual":
-                row["objective_value"] = abs(float(objective_raw))
-            else:
-                row["objective_value"] = float(objective_raw)
-            grid_rows.append(row)
+            for player_k in k_values:
+                row = _evaluate_parameter_candidate(
+                    modeling_table=modeling_table,
+                    cfg=cfg,
+                    beta_mv=float(beta_mv),
+                    beta_age=float(beta_age),
+                    player_k_factor=float(player_k),
+                    objective_split=objective_split,
+                    objective_metric=objective_metric,
+                    tag="grid",
+                )
+                grid_rows.append(row)
 
     grid_results = pd.DataFrame(grid_rows).sort_values(
-        ["objective_value", "test_log_loss", "beta_mv", "beta_age"],
+        ["objective_value", "test_log_loss", "beta_mv", "beta_age", "player_k_factor"],
         na_position="last",
     ).reset_index(drop=True)
     best_rows = grid_results.dropna(subset=["objective_value"])
@@ -409,7 +482,11 @@ def run_grid_search_market_age_adjusted_elo(
         best_params = None
     else:
         best = best_rows.iloc[0]
-        best_params = {"beta_mv": float(best["beta_mv"]), "beta_age": float(best["beta_age"])}
+        best_params = {
+            "beta_mv": float(best["beta_mv"]),
+            "beta_age": float(best["beta_age"]),
+            "player_k_factor": float(best["player_k_factor"]),
+        }
 
     best_backtest = None
     if rerun_best_backtest and best_params is not None:
@@ -418,6 +495,7 @@ def run_grid_search_market_age_adjusted_elo(
             use_market_age_adjustment=True,
             beta_mv=best_params["beta_mv"],
             beta_age=best_params["beta_age"],
+            player_k_factor=best_params["player_k_factor"],
             experiment_id=f"{cfg.experiment_id}_grid_best",
         )
         best_backtest = run_backtest_market_age_adjusted_elo(
@@ -433,9 +511,236 @@ def run_grid_search_market_age_adjusted_elo(
         "z_mv_summary": prepared["z_mv_summary"],
         "beta_mv_grid": mv_values,
         "beta_age_grid": age_values,
+        "player_k_grid": k_values,
         "objective_split": objective_split,
         "objective_metric": objective_metric,
         "grid_results": grid_results,
+        "best_params": best_params,
+        "best_model_backtest": best_backtest,
+    }
+
+
+def run_bayesian_optimization_market_age_adjusted_elo(
+    players_df: Optional[pd.DataFrame] = None,
+    fixtures_df: Optional[pd.DataFrame] = None,
+    config: Optional[Mapping[str, Any] | MarketAgeAdjustedEloConfig] = None,
+    beta_mv_bounds: tuple[float, float] = (0.0, 30.0),
+    beta_age_bounds: tuple[float, float] = (0.0, 3.0),
+    player_k_bounds: tuple[float, float] = (5.0, 40.0),
+    n_initial_points: int = 8,
+    n_iterations: int = 24,
+    candidate_pool_size: int = 1500,
+    objective_split: str = "validation",
+    objective_metric: str = "log_loss",
+    exploration_xi: float = 0.01,
+    random_seed: int = 42,
+    rerun_best_backtest: bool = True,
+) -> Dict[str, Any]:
+    cfg = as_config(config)
+    objective_split, objective_metric = _validate_objective(objective_split, objective_metric)
+
+    if players_df is None or fixtures_df is None:
+        players_df, fixtures_df = _load_default_data()
+
+    mv_low, mv_high = float(beta_mv_bounds[0]), float(beta_mv_bounds[1])
+    age_low, age_high = float(beta_age_bounds[0]), float(beta_age_bounds[1])
+    k_low, k_high = float(player_k_bounds[0]), float(player_k_bounds[1])
+    if mv_low > mv_high or age_low > age_high or k_low > k_high:
+        raise ValueError("Bounds must satisfy low <= high for beta_mv, beta_age, and player_k_factor")
+    if k_low < 0:
+        raise ValueError("player_k_bounds lower limit must be non-negative")
+    if n_initial_points < 1:
+        raise ValueError("n_initial_points must be >= 1")
+    if n_iterations < 0:
+        raise ValueError("n_iterations must be >= 0")
+    if candidate_pool_size < 10:
+        raise ValueError("candidate_pool_size must be >= 10")
+
+    prepared = _prepare_modeling_table(players_df, fixtures_df, cfg)
+    modeling_table = prepared["modeling_table"]
+
+    rng = np.random.default_rng(random_seed)
+    evaluated_keys: set[tuple[float, float, float]] = set()
+    search_rows: list[Dict[str, Any]] = []
+
+    def _clip_point(beta_mv: float, beta_age: float, player_k_factor: float) -> tuple[float, float, float]:
+        return (
+            float(np.clip(beta_mv, mv_low, mv_high)),
+            float(np.clip(beta_age, age_low, age_high)),
+            float(np.clip(player_k_factor, k_low, k_high)),
+        )
+
+    def _eval_point(beta_mv: float, beta_age: float, player_k_factor: float, *, stage: str, iteration: int) -> bool:
+        bmv, bage, bk = _clip_point(beta_mv, beta_age, player_k_factor)
+        key = (round(bmv, 10), round(bage, 10), round(bk, 10))
+        if key in evaluated_keys:
+            return False
+        evaluated_keys.add(key)
+        row = _evaluate_parameter_candidate(
+            modeling_table=modeling_table,
+            cfg=cfg,
+            beta_mv=bmv,
+            beta_age=bage,
+            player_k_factor=bk,
+            objective_split=objective_split,
+            objective_metric=objective_metric,
+            tag="bayes",
+        )
+        row["stage"] = stage
+        row["iteration"] = int(iteration)
+        search_rows.append(row)
+        return True
+
+    initial_points = [
+        (mv_low, age_low, k_low),
+        (mv_low, age_low, k_high),
+        (mv_low, age_high, k_low),
+        (mv_low, age_high, k_high),
+        (mv_high, age_low, k_low),
+        (mv_high, age_low, k_high),
+        (mv_high, age_high, k_low),
+        (mv_high, age_high, k_high),
+        ((mv_low + mv_high) / 2.0, (age_low + age_high) / 2.0, (k_low + k_high) / 2.0),
+    ]
+    initial_idx = 0
+    while len(search_rows) < n_initial_points:
+        if initial_idx < len(initial_points):
+            candidate = initial_points[initial_idx]
+            initial_idx += 1
+        else:
+            candidate = (
+                float(rng.uniform(mv_low, mv_high)),
+                float(rng.uniform(age_low, age_high)),
+                float(rng.uniform(k_low, k_high)),
+            )
+        _eval_point(candidate[0], candidate[1], candidate[2], stage="initial", iteration=0)
+
+    for iteration in range(1, n_iterations + 1):
+        observed = pd.DataFrame(search_rows)
+        finite = observed["objective_value"].notna()
+        if finite.sum() < 2:
+            _eval_point(
+                float(rng.uniform(mv_low, mv_high)),
+                float(rng.uniform(age_low, age_high)),
+                float(rng.uniform(k_low, k_high)),
+                stage="random_fallback",
+                iteration=iteration,
+            )
+            continue
+
+        X_obs = observed.loc[finite, ["beta_mv", "beta_age", "player_k_factor"]].to_numpy(dtype=float)
+        y_obs = observed.loc[finite, "objective_value"].to_numpy(dtype=float)
+
+        kernel = ConstantKernel(1.0, (1e-3, 1e3)) * Matern(length_scale=[10.0, 1.0, 6.0], nu=2.5) + WhiteKernel(
+            noise_level=1e-6,
+            noise_level_bounds=(1e-8, 1e-2),
+        )
+        gp = GaussianProcessRegressor(
+            kernel=kernel,
+            normalize_y=True,
+            random_state=random_seed + iteration,
+            n_restarts_optimizer=2,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=ConvergenceWarning)
+            gp.fit(X_obs, y_obs)
+
+        candidate_pool = np.column_stack(
+            [
+                rng.uniform(mv_low, mv_high, size=candidate_pool_size),
+                rng.uniform(age_low, age_high, size=candidate_pool_size),
+                rng.uniform(k_low, k_high, size=candidate_pool_size),
+            ]
+        )
+        if len(evaluated_keys) > 0:
+            keys = np.array(list(evaluated_keys), dtype=float)
+            # Drop points that are numerically identical to already evaluated candidates.
+            distances = np.min(np.linalg.norm(candidate_pool[:, None, :] - keys[None, :, :], axis=2), axis=1)
+            candidate_pool = candidate_pool[distances > 1e-10]
+        if len(candidate_pool) == 0:
+            _eval_point(
+                float(rng.uniform(mv_low, mv_high)),
+                float(rng.uniform(age_low, age_high)),
+                float(rng.uniform(k_low, k_high)),
+                stage="random_no_pool",
+                iteration=iteration,
+            )
+            continue
+
+        mu, sigma = gp.predict(candidate_pool, return_std=True)
+        best_observed = float(np.min(y_obs))
+        acquisition = _expected_improvement(mu, sigma, best_observed=best_observed, xi=exploration_xi)
+        if np.all(np.isnan(acquisition)):
+            idx_best = int(rng.integers(0, len(candidate_pool)))
+        else:
+            idx_best = int(np.nanargmax(acquisition))
+        next_point = candidate_pool[idx_best]
+        accepted = _eval_point(
+            float(next_point[0]),
+            float(next_point[1]),
+            float(next_point[2]),
+            stage="ei",
+            iteration=iteration,
+        )
+        if not accepted:
+            _eval_point(
+                float(rng.uniform(mv_low, mv_high)),
+                float(rng.uniform(age_low, age_high)),
+                float(rng.uniform(k_low, k_high)),
+                stage="random_duplicate_fallback",
+                iteration=iteration,
+            )
+
+    search_results = pd.DataFrame(search_rows).sort_values(
+        ["objective_value", "test_log_loss", "beta_mv", "beta_age", "player_k_factor"],
+        na_position="last",
+    ).reset_index(drop=True)
+
+    best_rows = search_results.dropna(subset=["objective_value"])
+    best_params: Optional[Dict[str, float]]
+    if best_rows.empty:
+        best_params = None
+    else:
+        best = best_rows.iloc[0]
+        best_params = {
+            "beta_mv": float(best["beta_mv"]),
+            "beta_age": float(best["beta_age"]),
+            "player_k_factor": float(best["player_k_factor"]),
+        }
+
+    best_backtest = None
+    if rerun_best_backtest and best_params is not None:
+        best_cfg = replace(
+            cfg,
+            use_market_age_adjustment=True,
+            beta_mv=best_params["beta_mv"],
+            beta_age=best_params["beta_age"],
+            player_k_factor=best_params["player_k_factor"],
+            experiment_id=f"{cfg.experiment_id}_bayes_best",
+        )
+        best_backtest = run_backtest_market_age_adjusted_elo(
+            players_df=players_df,
+            fixtures_df=fixtures_df,
+            config=best_cfg,
+        )
+
+    return {
+        "config": cfg,
+        "quality_summary": prepared["quality_summary"],
+        "normalization_metadata": prepared["normalizer"].metadata(),
+        "z_mv_summary": prepared["z_mv_summary"],
+        "optimizer": "bayes",
+        "beta_mv_bounds": [mv_low, mv_high],
+        "beta_age_bounds": [age_low, age_high],
+        "player_k_bounds": [k_low, k_high],
+        "n_initial_points": int(n_initial_points),
+        "n_iterations": int(n_iterations),
+        "candidate_pool_size": int(candidate_pool_size),
+        "exploration_xi": float(exploration_xi),
+        "random_seed": int(random_seed),
+        "objective_split": objective_split,
+        "objective_metric": objective_metric,
+        "search_results": search_results,
         "best_params": best_params,
         "best_model_backtest": best_backtest,
     }
@@ -503,12 +808,57 @@ def save_grid_search_outputs(results: Dict[str, Any], output_dir: str | Path) ->
         "objective_metric": results["objective_metric"],
         "beta_mv_grid": results["beta_mv_grid"],
         "beta_age_grid": results["beta_age_grid"],
+        "player_k_grid": results["player_k_grid"],
         "best_params": results["best_params"],
         "quality_summary": results["quality_summary"],
     }
     summary_path = out_dir / "grid_search_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2))
     written["grid_search_summary"] = summary_path
+
+    results["z_mv_summary"].to_csv(out_dir / "z_mv_summary.csv", index=False)
+    written["z_mv_summary"] = out_dir / "z_mv_summary.csv"
+
+    quality_df = pd.DataFrame([results["quality_summary"]])
+    quality_df.to_csv(out_dir / "data_quality_summary.csv", index=False)
+    written["data_quality_summary"] = out_dir / "data_quality_summary.csv"
+
+    best_backtest = results.get("best_model_backtest")
+    if isinstance(best_backtest, dict):
+        nested = save_backtest_outputs(best_backtest, out_dir / "best_model_backtest")
+        for key, path in nested.items():
+            written[f"best_model_backtest/{key}"] = path
+
+    return written
+
+
+def save_bayesian_search_outputs(results: Dict[str, Any], output_dir: str | Path) -> Dict[str, Path]:
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    written: Dict[str, Path] = {}
+
+    results["search_results"].to_csv(out_dir / "bayes_search_results.csv", index=False)
+    written["bayes_search_results"] = out_dir / "bayes_search_results.csv"
+
+    summary = {
+        "optimizer": results.get("optimizer", "bayes"),
+        "objective_split": results["objective_split"],
+        "objective_metric": results["objective_metric"],
+        "beta_mv_bounds": results["beta_mv_bounds"],
+        "beta_age_bounds": results["beta_age_bounds"],
+        "player_k_bounds": results["player_k_bounds"],
+        "n_initial_points": results["n_initial_points"],
+        "n_iterations": results["n_iterations"],
+        "candidate_pool_size": results["candidate_pool_size"],
+        "exploration_xi": results["exploration_xi"],
+        "random_seed": results["random_seed"],
+        "best_params": results["best_params"],
+        "quality_summary": results["quality_summary"],
+    }
+    summary_path = out_dir / "bayes_search_summary.json"
+    summary_path.write_text(json.dumps(summary, indent=2))
+    written["bayes_search_summary"] = summary_path
 
     results["z_mv_summary"].to_csv(out_dir / "z_mv_summary.csv", index=False)
     written["z_mv_summary"] = out_dir / "z_mv_summary.csv"

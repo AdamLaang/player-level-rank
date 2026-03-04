@@ -1,6 +1,8 @@
 from .backtest import (
     run_backtest_market_age_adjusted_elo,
+    run_bayesian_optimization_market_age_adjusted_elo,
     run_grid_search_market_age_adjusted_elo,
+    save_bayesian_search_outputs,
     save_backtest_outputs,
     save_grid_search_outputs,
 )
@@ -34,6 +36,8 @@ __all__ = [
     "update_player_elo",
     "run_backtest_market_age_adjusted_elo",
     "run_grid_search_market_age_adjusted_elo",
+    "run_bayesian_optimization_market_age_adjusted_elo",
     "save_backtest_outputs",
     "save_grid_search_outputs",
+    "save_bayesian_search_outputs",
 ]

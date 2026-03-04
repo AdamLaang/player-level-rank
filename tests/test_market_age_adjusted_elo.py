@@ -13,6 +13,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from market_age_elo.backtest import (
+    run_bayesian_optimization_market_age_adjusted_elo,
     run_backtest_market_age_adjusted_elo,
     run_grid_search_market_age_adjusted_elo,
 )
@@ -273,16 +274,60 @@ class TestMarketAgeAdjustedElo(unittest.TestCase):
             config=cfg,
             beta_mv_grid=[0.0, 8.0],
             beta_age_grid=[0.0, 1.2],
+            player_k_grid=[10.0, 20.0],
             objective_split="test",
             objective_metric="log_loss",
             rerun_best_backtest=True,
         )
 
         self.assertIn("grid_results", search)
-        self.assertEqual(len(search["grid_results"]), 4)
+        self.assertEqual(len(search["grid_results"]), 8)
         self.assertIn("best_params", search)
         self.assertIsNotNone(search["best_params"])
-        self.assertTrue({"beta_mv", "beta_age", "objective_value"}.issubset(search["grid_results"].columns))
+        self.assertTrue(
+            {"beta_mv", "beta_age", "player_k_factor", "objective_value"}.issubset(
+                search["grid_results"].columns
+            )
+        )
+        self.assertIn("player_k_factor", search["best_params"])
+        self.assertIn("best_model_backtest", search)
+        self.assertIn("variant_metrics", search["best_model_backtest"])
+
+    def test_bayesian_optimization_beta_mv_beta_age(self) -> None:
+        fixtures, players = self._sample_inputs()
+        cfg = MarketAgeAdjustedEloConfig(
+            min_group_size_for_mv_norm=1,
+            train_split_frac=0.5,
+            validation_split_frac=0.25,
+        )
+        search = run_bayesian_optimization_market_age_adjusted_elo(
+            players_df=players,
+            fixtures_df=fixtures,
+            config=cfg,
+            beta_mv_bounds=(0.0, 12.0),
+            beta_age_bounds=(0.0, 2.0),
+            player_k_bounds=(5.0, 30.0),
+            n_initial_points=5,
+            n_iterations=4,
+            candidate_pool_size=200,
+            objective_split="validation",
+            objective_metric="log_loss",
+            random_seed=7,
+            rerun_best_backtest=True,
+        )
+
+        self.assertIn("search_results", search)
+        # unique evaluations should be <= initial + iterations
+        self.assertLessEqual(len(search["search_results"]), 9)
+        self.assertGreaterEqual(len(search["search_results"]), 5)
+        self.assertIn("best_params", search)
+        self.assertIsNotNone(search["best_params"])
+        self.assertIn("player_k_factor", search["best_params"])
+        self.assertTrue(
+            {"beta_mv", "beta_age", "player_k_factor", "objective_value", "stage", "iteration"}.issubset(
+                search["search_results"].columns
+            )
+        )
         self.assertIn("best_model_backtest", search)
         self.assertIn("variant_metrics", search["best_model_backtest"])
 
