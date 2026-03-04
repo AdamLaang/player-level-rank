@@ -1,4 +1,4 @@
-# Player ELO (Market + Age Adjusted)
+# Player ELO ranking (Estimated marketvalue + Age Adjusted)
 
 This repository now includes an attacker-focused, config-driven player ELO pipeline with optional age and market-value adjusted expectation.
 
