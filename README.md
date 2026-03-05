@@ -51,7 +51,7 @@ with:
 
 ## Example Plot (Mohamed Salah)
 
-Raw + smoothed player ranking over time, with market value and age (age on the lowest panel):
+Raw + smoothed player ranking over time, with market value and age:
 
 ![Mohamed Salah Player Ranking Timeline](docs/assets/mohamed_salah_player_ranking_timeline.png)
 
