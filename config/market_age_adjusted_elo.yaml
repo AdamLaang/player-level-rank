@@ -5,6 +5,7 @@ home_advantage_mode: symmetric
 beta_mv: 18.0
 beta_mv_team: 0.0
 beta_age: 1.2
+age_penalty_mode: quadratic
 peak_age_by_position:
   GK: 29
   DEF: 27

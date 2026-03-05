@@ -18,7 +18,7 @@ from .features import (
     MarketValueNormalizer,
     build_player_match_modeling_table,
 )
-from .model import compute_age_peak_distance_sq, run_player_elo_updates
+from .model import compute_age_peak_distance, run_player_elo_updates
 
 
 def _load_default_data(
@@ -153,6 +153,48 @@ def _metric_rows(pred_df: pd.DataFrame, variant_name: str) -> list[dict[str, Any
     return rows
 
 
+def _fit_empirical_bayes_shrinkage(
+    summary: pd.DataFrame,
+    mean_col: str,
+    se_col: str,
+    *,
+    min_prior_sd: float = 0.02,
+) -> tuple[pd.DataFrame, float]:
+    out = summary.copy()
+    prior_var_floor = float(min_prior_sd) ** 2
+
+    valid = out[mean_col].notna() & out[se_col].notna()
+    if int(valid.sum()) >= 2:
+        observed_var = float(out.loc[valid, mean_col].var(ddof=1))
+        noise_var = float(np.square(out.loc[valid, se_col]).mean())
+        prior_var = max(observed_var - noise_var, prior_var_floor)
+    else:
+        prior_var = prior_var_floor
+
+    out["_eb_prior_var"] = prior_var
+    out["_eb_shrinkage"] = prior_var / (prior_var + np.square(out[se_col]))
+    out["_eb_posterior_mean"] = out["_eb_shrinkage"] * out[mean_col]
+    out["_eb_posterior_sd"] = np.sqrt(
+        (prior_var * np.square(out[se_col])) / (prior_var + np.square(out[se_col]))
+    )
+    out["_eb_posterior_z"] = np.where(
+        out["_eb_posterior_sd"] > 0,
+        out["_eb_posterior_mean"] / out["_eb_posterior_sd"],
+        np.nan,
+    )
+    z_filled = out["_eb_posterior_z"].fillna(0.0).to_numpy(dtype=float)
+    out["_eb_prob_overperforming"] = _normal_cdf(z_filled)
+    out["_eb_signal"] = np.select(
+        [
+            out["_eb_prob_overperforming"] >= 0.7,
+            out["_eb_prob_overperforming"] <= 0.3,
+        ],
+        ["likely_overperforming", "likely_underperforming"],
+        default="uncertain",
+    )
+    return out, float(prior_var)
+
+
 def _build_player_season_diagnostics(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
@@ -171,24 +213,171 @@ def _build_player_season_diagnostics(df: pd.DataFrame) -> pd.DataFrame:
         .astype({"matches": int})
     )
 
+    work = df.copy()
+    if "is_update_eligible" in work.columns:
+        work = work[work["is_update_eligible"].fillna(False)]
+
+    work["_minutes"] = pd.to_numeric(work.get("minutes_played"), errors="coerce").fillna(0.0).clip(lower=0.0)
+    work["_weight"] = np.clip(work["_minutes"] / 90.0, 0.0, 1.0)
+    work["_weight_sq"] = np.square(work["_weight"])
+
+    observed = pd.to_numeric(work.get("observed_performance_score"), errors="coerce")
+    expected = pd.to_numeric(work.get("expected_score"), errors="coerce").clip(1e-3, 1.0 - 1e-3)
+    residual = pd.to_numeric(work.get("performance_residual"), errors="coerce")
+    missing_residual = residual.isna() & observed.notna() & expected.notna()
+    residual = residual.mask(missing_residual, observed - expected)
+
+    work["_residual"] = residual
+    work["_residual_var"] = expected * (1.0 - expected)
+    work["_weighted_residual"] = work["_weight"] * work["_residual"]
+    work["_weighted_residual_var"] = work["_weight_sq"] * work["_residual_var"]
+
+    dispersion_slice = work[(work["_residual"].notna()) & (work["_residual_var"] > 0)].copy()
+    if dispersion_slice.empty:
+        dispersion = 1.0
+    else:
+        sq_std = np.square(dispersion_slice["_residual"]) / dispersion_slice["_residual_var"]
+        sq_std = sq_std.replace([np.inf, -np.inf], np.nan).dropna()
+        if sq_std.empty:
+            dispersion = 1.0
+        else:
+            # Mild clipping keeps uncertainty inflation stable in small samples.
+            dispersion = float(np.clip(sq_std.mean(), 1.0, 4.0))
+
     weighted = (
-        df.assign(
-            _minutes=df["minutes_played"].fillna(0.0),
-            _weighted_residual=df["performance_residual"] * df["minutes_played"].fillna(0.0),
+        work.groupby(existing_group_cols, dropna=False)
+        .agg(
+            _weight_sum=("_weight", "sum"),
+            _weight_sq_sum=("_weight_sq", "sum"),
+            _weighted_residual_sum=("_weighted_residual", "sum"),
+            _weighted_residual_var_sum=("_weighted_residual_var", "sum"),
         )
-        .groupby(existing_group_cols, dropna=False)
-        .agg(_minutes_sum=("_minutes", "sum"), _weighted_sum=("_weighted_residual", "sum"))
         .reset_index()
     )
 
     out = out.merge(weighted, on=existing_group_cols, how="left")
+    out["_weight_sum"] = out["_weight_sum"].fillna(0.0)
+    out["_weight_sq_sum"] = out["_weight_sq_sum"].fillna(0.0)
+    out["_weighted_residual_sum"] = out["_weighted_residual_sum"].fillna(0.0)
+    out["_weighted_residual_var_sum"] = out["_weighted_residual_var_sum"].fillna(0.0)
     out["minutes_weighted_avg_residual"] = np.where(
-        out["_minutes_sum"] > 0,
-        out["_weighted_sum"] / out["_minutes_sum"],
+        out["_weight_sum"] > 0,
+        out["_weighted_residual_sum"] / out["_weight_sum"],
         out["average_residual"],
     )
+    out["effective_sample_size"] = np.where(
+        out["_weight_sq_sum"] > 0,
+        np.square(out["_weight_sum"]) / out["_weight_sq_sum"],
+        np.nan,
+    )
+    out["residual_standard_error"] = np.where(
+        out["_weight_sum"] > 0,
+        np.sqrt(dispersion * out["_weighted_residual_var_sum"]) / out["_weight_sum"],
+        np.nan,
+    )
+
+    eb, prior_var = _fit_empirical_bayes_shrinkage(
+        out,
+        mean_col="minutes_weighted_avg_residual",
+        se_col="residual_standard_error",
+    )
+    out["eb_shrinkage"] = eb["_eb_shrinkage"]
+    out["eb_shrunk_residual"] = eb["_eb_posterior_mean"]
+    out["eb_posterior_sd"] = eb["_eb_posterior_sd"]
+    out["eb_posterior_z"] = eb["_eb_posterior_z"]
+    out["eb_prob_overperforming"] = eb["_eb_prob_overperforming"]
+    out["eb_signal"] = eb["_eb_signal"]
+    out["residual_dispersion"] = float(dispersion)
+    out["eb_prior_sd"] = float(np.sqrt(prior_var))
+
+    out = out.drop(
+        columns=[
+            "_weight_sum",
+            "_weight_sq_sum",
+            "_weighted_residual_sum",
+            "_weighted_residual_var_sum",
+        ]
+    )
+    return out.sort_values(existing_group_cols).reset_index(drop=True)
+
+
+def _build_player_multiseason_diagnostics(player_season_diagnostics: pd.DataFrame) -> pd.DataFrame:
+    if player_season_diagnostics.empty:
+        return pd.DataFrame()
+
+    group_cols = ["player_id", "player_name"]
+    existing_group_cols = [c for c in group_cols if c in player_season_diagnostics.columns]
+    if not existing_group_cols:
+        return pd.DataFrame()
+
+    grouped = player_season_diagnostics.groupby(existing_group_cols, dropna=False)
+    out = (
+        grouped.agg(
+            seasons=("season", "nunique"),
+            matches=("matches", "sum"),
+            minutes=("minutes", "sum"),
+            mean_season_residual=("average_residual", "mean"),
+            mean_season_shrunk_residual=("eb_shrunk_residual", "mean"),
+        )
+        .reset_index()
+        .astype({"seasons": int, "matches": int})
+    )
+
+    weighted_minutes = (
+        player_season_diagnostics.assign(
+            _minutes=player_season_diagnostics["minutes"].fillna(0.0),
+            _weighted_shrunk=player_season_diagnostics["eb_shrunk_residual"]
+            * player_season_diagnostics["minutes"].fillna(0.0),
+        )
+        .groupby(existing_group_cols, dropna=False)
+        .agg(_minutes_sum=("_minutes", "sum"), _weighted_sum=("_weighted_shrunk", "sum"))
+        .reset_index()
+    )
+    out = out.merge(weighted_minutes, on=existing_group_cols, how="left")
+    out["minutes_weighted_shrunk_residual"] = np.where(
+        out["_minutes_sum"] > 0,
+        out["_weighted_sum"] / out["_minutes_sum"],
+        out["mean_season_shrunk_residual"],
+    )
     out = out.drop(columns=["_minutes_sum", "_weighted_sum"])
-    return out
+
+    precision_work = player_season_diagnostics.copy()
+    precision_work["_posterior_var"] = np.square(precision_work["eb_posterior_sd"])
+    precision_work["_precision"] = np.where(
+        precision_work["_posterior_var"] > 0,
+        1.0 / precision_work["_posterior_var"],
+        0.0,
+    )
+    precision_work["_precision_mu"] = precision_work["_precision"] * precision_work["eb_shrunk_residual"]
+    precision_summary = (
+        precision_work.groupby(existing_group_cols, dropna=False)
+        .agg(_precision_sum=("_precision", "sum"), _precision_mu_sum=("_precision_mu", "sum"))
+        .reset_index()
+    )
+    out = out.merge(precision_summary, on=existing_group_cols, how="left")
+    out["combined_shrunk_residual"] = np.where(
+        out["_precision_sum"] > 0,
+        out["_precision_mu_sum"] / out["_precision_sum"],
+        out["minutes_weighted_shrunk_residual"],
+    )
+    out["combined_shrunk_residual_sd"] = np.where(out["_precision_sum"] > 0, np.sqrt(1.0 / out["_precision_sum"]), np.nan)
+    out["combined_shrunk_residual_z"] = np.where(
+        out["combined_shrunk_residual_sd"] > 0,
+        out["combined_shrunk_residual"] / out["combined_shrunk_residual_sd"],
+        np.nan,
+    )
+    z_filled = out["combined_shrunk_residual_z"].fillna(0.0).to_numpy(dtype=float)
+    out["combined_prob_overperforming"] = _normal_cdf(z_filled)
+    out["combined_signal"] = np.select(
+        [
+            out["combined_prob_overperforming"] >= 0.7,
+            out["combined_prob_overperforming"] <= 0.3,
+        ],
+        ["likely_overperforming", "likely_underperforming"],
+        default="uncertain",
+    )
+    out = out.drop(columns=["_precision_sum", "_precision_mu_sum"])
+    return out.sort_values(existing_group_cols).reset_index(drop=True)
 
 
 def _build_opponent_strength_diagnostics(df: pd.DataFrame) -> pd.DataFrame:
@@ -222,12 +411,17 @@ def _prepare_modeling_table(
 
     base_table["dataset_split"] = _assign_time_splits(base_table, cfg)
 
-    base_table["age_peak_distance_sq"] = compute_age_peak_distance_sq(
+    distance_mode = cfg.age_penalty_mode if cfg.age_penalty_mode in {"quadratic", "absolute"} else "quadratic"
+    age_peak_distance = compute_age_peak_distance(
         player_age_years=base_table["player_age_years"],
         position_group=base_table["position_group"],
         peak_age_by_position=cfg.peak_age_by_position,
         fallback_peak_age=cfg.fallback_peak_age,
+        distance_mode=distance_mode,
     )
+    # Keep legacy column name for compatibility with older outputs/scripts.
+    base_table["age_peak_distance"] = age_peak_distance
+    base_table["age_peak_distance_sq"] = age_peak_distance
 
     train_mask = base_table["dataset_split"].eq("train")
     normalizer = MarketValueNormalizer(
@@ -422,8 +616,22 @@ def run_backtest_market_age_adjusted_elo(
     normalizer = prepared["normalizer"]
 
     variant_configs = {
-        "baseline": replace(cfg, use_market_age_adjustment=False, beta_mv=0.0, beta_age=0.0),
-        "market_only": replace(cfg, use_market_age_adjustment=True, beta_mv=cfg.beta_mv, beta_age=0.0),
+        "baseline": replace(
+            cfg,
+            use_market_age_adjustment=False,
+            beta_mv=0.0,
+            beta_age=0.0,
+            beta_age_young=0.0,
+            beta_age_old=0.0,
+        ),
+        "market_only": replace(
+            cfg,
+            use_market_age_adjustment=True,
+            beta_mv=cfg.beta_mv,
+            beta_age=0.0,
+            beta_age_young=0.0,
+            beta_age_old=0.0,
+        ),
         "age_only": replace(cfg, use_market_age_adjustment=True, beta_mv=0.0, beta_age=cfg.beta_age),
         "market_age": replace(cfg, use_market_age_adjustment=True),
     }
@@ -432,6 +640,7 @@ def run_backtest_market_age_adjusted_elo(
 
     main_output = evaluated["variant_outputs"]["market_age"]
     player_season_diagnostics = _build_player_season_diagnostics(main_output)
+    player_multiseason_diagnostics = _build_player_multiseason_diagnostics(player_season_diagnostics)
     opponent_strength_diagnostics = _build_opponent_strength_diagnostics(main_output)
 
     return {
@@ -450,6 +659,7 @@ def run_backtest_market_age_adjusted_elo(
         "age_bucket_residuals_test": evaluated["age_bucket_residuals_test"],
         "mv_bucket_residuals_test": evaluated["mv_bucket_residuals_test"],
         "player_season_diagnostics": player_season_diagnostics,
+        "player_multiseason_diagnostics": player_multiseason_diagnostics,
         "opponent_strength_diagnostics": opponent_strength_diagnostics,
     }
 
@@ -861,6 +1071,9 @@ def save_backtest_outputs(results: Dict[str, Any], output_dir: str | Path) -> Di
 
     results["player_season_diagnostics"].to_csv(out_dir / "player_season_diagnostics.csv", index=False)
     written["player_season_diagnostics"] = out_dir / "player_season_diagnostics.csv"
+
+    results["player_multiseason_diagnostics"].to_csv(out_dir / "player_multiseason_diagnostics.csv", index=False)
+    written["player_multiseason_diagnostics"] = out_dir / "player_multiseason_diagnostics.csv"
 
     results["opponent_strength_diagnostics"].to_csv(out_dir / "opponent_strength_diagnostics.csv", index=False)
     written["opponent_strength_diagnostics"] = out_dir / "opponent_strength_diagnostics.csv"

@@ -36,14 +36,21 @@ For each attacker-player match row:
 ## Insertion point for market-value + age adjustment
 The adjustment is inserted between baseline `R_player_pre` and expectation `E`:
 
-- `R_eff = R_player_pre + beta_mv * z_mv - beta_age * age_peak_distance_sq`
+- `R_eff = R_player_pre + beta_mv * z_mv + beta_mv_team * z_mv_team_context - age_penalty_term`
 - Then `E` is computed from `R_eff` instead of raw `R_player_pre`.
 - If `use_market_age_adjustment=false`, the path reverts to baseline expectation logic.
+
+Age penalty term is controlled by `age_penalty_mode`:
+- `quadratic`: `age_penalty_term = beta_age * (age - peak_age_pos)^2`
+- `absolute`: `age_penalty_term = beta_age * |age - peak_age_pos|`
+- `asymmetric_quadratic`:
+  - younger than peak: `beta_age_young * (peak_age_pos - age)^2`
+  - older than peak: `beta_age_old * (age - peak_age_pos)^2`
 
 ## Data-path and leakage controls
 - Attacker-only filter (`position_group == ATT`) is applied in modeling-table build.
 - Market value alignment uses forward-fill per player over time (no look-ahead).
 - Market-value normalizer is fit on training dates only and applied to validation/test.
 - Missing market value: `z_mv = 0`.
-- Missing age: neutral age term (`age_peak_distance_sq = 0`).
+- Missing age: neutral age term (`age_penalty_term = 0`).
 - Missing position: fallback group `UNK` + fallback peak age.

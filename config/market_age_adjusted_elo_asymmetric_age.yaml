@@ -1,0 +1,4 @@
+# Override config to use asymmetric quadratic age penalty.
+age_penalty_mode: asymmetric_quadratic
+beta_age_young: 4.0
+beta_age_old: 1.0

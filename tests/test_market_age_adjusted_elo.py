@@ -25,6 +25,8 @@ from market_age_elo.features import (
     compute_player_age_at_match,
 )
 from market_age_elo.model import (
+    compute_age_peak_distance,
+    compute_age_penalty_term,
     compute_age_peak_distance_sq,
     compute_effective_player_rating,
     compute_expected_player_score,
@@ -198,6 +200,38 @@ class TestMarketAgeAdjustedElo(unittest.TestCase):
         self.assertAlmostEqual(compute_log_market_value(999999), np.log1p(999999))
         self.assertTrue(np.isnan(compute_log_market_value(None)))
 
+    def test_compute_age_peak_distance_modes(self) -> None:
+        ages = pd.Series([24.0, 30.0, np.nan])
+        positions = pd.Series(["ATT", "ATT", "ATT"])
+        peak_map = {"ATT": 26.0}
+
+        sq = compute_age_peak_distance(
+            player_age_years=ages,
+            position_group=positions,
+            peak_age_by_position=peak_map,
+            distance_mode="quadratic",
+        )
+        abs_dist = compute_age_peak_distance(
+            player_age_years=ages,
+            position_group=positions,
+            peak_age_by_position=peak_map,
+            distance_mode="absolute",
+        )
+
+        self.assertTrue(np.allclose(sq.to_numpy(), np.array([4.0, 16.0, 0.0])))
+        self.assertTrue(np.allclose(abs_dist.to_numpy(), np.array([2.0, 4.0, 0.0])))
+
+        asym = compute_age_penalty_term(
+            player_age_years=ages,
+            position_group=positions,
+            beta_age=1.2,
+            age_penalty_mode="asymmetric_quadratic",
+            beta_age_young=2.0,
+            beta_age_old=0.5,
+            peak_age_by_position=peak_map,
+        )
+        self.assertTrue(np.allclose(asym.to_numpy(), np.array([8.0, 8.0, 0.0])))
+
     def test_effective_rating_formula(self) -> None:
         eff = compute_effective_player_rating(
             player_elo_pre=1500,
@@ -264,6 +298,54 @@ class TestMarketAgeAdjustedElo(unittest.TestCase):
         self.assertIn("variant_metrics", results)
         self.assertEqual(set(results["variant_outputs"].keys()), {"baseline", "market_only", "age_only", "market_age"})
         self.assertTrue({"expected_score", "performance_residual", "effective_player_rating"}.issubset(results["variant_outputs"]["market_age"].columns))
+        self.assertIn("player_multiseason_diagnostics", results)
+        self.assertTrue(
+            {
+                "eb_shrunk_residual",
+                "eb_prob_overperforming",
+                "eb_signal",
+            }.issubset(results["player_season_diagnostics"].columns)
+        )
+        self.assertTrue(
+            {
+                "combined_shrunk_residual",
+                "combined_prob_overperforming",
+                "combined_signal",
+            }.issubset(results["player_multiseason_diagnostics"].columns)
+        )
+
+        cfg_abs = MarketAgeAdjustedEloConfig(
+            min_group_size_for_mv_norm=1,
+            train_split_frac=0.5,
+            validation_split_frac=0.25,
+            age_penalty_mode="absolute",
+        )
+        results_abs = run_backtest_market_age_adjusted_elo(players_df=players, fixtures_df=fixtures, config=cfg_abs)
+        age_only_sq = results["variant_outputs"]["age_only"]
+        age_only_abs = results_abs["variant_outputs"]["age_only"]
+        self.assertFalse(
+            np.allclose(
+                age_only_sq["expected_score"].to_numpy(),
+                age_only_abs["expected_score"].to_numpy(),
+            )
+        )
+
+        cfg_asym = MarketAgeAdjustedEloConfig(
+            min_group_size_for_mv_norm=1,
+            train_split_frac=0.5,
+            validation_split_frac=0.25,
+            age_penalty_mode="asymmetric_quadratic",
+            beta_age_young=2.0,
+            beta_age_old=0.4,
+        )
+        results_asym = run_backtest_market_age_adjusted_elo(players_df=players, fixtures_df=fixtures, config=cfg_asym)
+        age_only_asym = results_asym["variant_outputs"]["age_only"]
+        self.assertFalse(
+            np.allclose(
+                age_only_sq["expected_score"].to_numpy(),
+                age_only_asym["expected_score"].to_numpy(),
+            )
+        )
 
     def test_grid_search_beta_mv_beta_age(self) -> None:
         fixtures, players = self._sample_inputs()

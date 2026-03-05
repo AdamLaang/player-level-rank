@@ -80,6 +80,12 @@ def _residual_series(df: pd.DataFrame, residual_col: str) -> pd.Series:
     return pd.to_numeric(df[residual_col], errors="coerce")
 
 
+def _goals_series(df: pd.DataFrame, goals_col: str) -> pd.Series:
+    if goals_col not in df.columns:
+        raise KeyError(f"Missing requested goals column: {goals_col}")
+    return pd.to_numeric(df[goals_col], errors="coerce")
+
+
 def _smoothing_spline_series(
     x: pd.Series,
     y: pd.Series,
@@ -88,7 +94,7 @@ def _smoothing_spline_series(
     min_points: int = 4,
 ) -> tuple[pd.Series, bool]:
     x_dt = pd.to_datetime(x, utc=True, errors="coerce")
-    y_num = pd.to_numeric(y, errors="coerce")
+    y_num = pd.to_numeric(y, errors="coerce").astype("float64")
     out = y_num.copy()
 
     valid_mask = x_dt.notna() & y_num.notna()
@@ -167,6 +173,8 @@ def plot_player_elo_timeline(
     smooth_window: int = 5,
     residual_col: str = "performance_residual",
     include_residual: bool = True,
+    goals_col: str = "goals",
+    include_goals: bool = True,
     include_age: bool = True,
     include_market_value: bool = True,
     use_subplots: bool = True,
@@ -176,6 +184,9 @@ def plot_player_elo_timeline(
     residual_spline: bool = True,
     residual_spline_s: Optional[float] = None,
     residual_spline_strength: float = 0.75,
+    goals_spline: bool = True,
+    goals_spline_s: Optional[float] = None,
+    goals_spline_strength: float = 0.75,
     show: bool = False,
 ):
     plt = _get_matplotlib_pyplot()
@@ -203,6 +214,19 @@ def plot_player_elo_timeline(
         if spline_used:
             residual_label = "Performance Residual (Spline)"
 
+    goals = _goals_series(df, goals_col) if include_goals else None
+    goals_for_plot = goals
+    goals_label = "Goals"
+    if include_goals and goals is not None and goals_spline:
+        goals_for_plot, goals_spline_used = _smoothing_spline_series(
+            x=x,
+            y=goals,
+            spline_s=goals_spline_s,
+            spline_strength=goals_spline_strength,
+        )
+        if goals_spline_used:
+            goals_label = "Goals (Spline)"
+
     baseline_x, baseline_ranking_smooth, baseline_window = _optional_baseline_ranking_series(
         baseline_player_df=baseline_player_df,
         baseline_col=baseline_elo_col,
@@ -213,7 +237,7 @@ def plot_player_elo_timeline(
     player_id_label = str(df.get("player_id", pd.Series(["?"])).iloc[0])
 
     if use_subplots:
-        n_panels = 1 + int(include_residual) + int(include_market_value) + int(include_age)
+        n_panels = 1 + int(include_residual) + int(include_goals) + int(include_market_value) + int(include_age)
         fig, axes = plt.subplots(n_panels, 1, figsize=(12, 3.2 * n_panels), sharex=True)
         if n_panels == 1:
             axes = [axes]
@@ -251,6 +275,14 @@ def plot_player_elo_timeline(
             ax_res.set_ylabel("Residual")
             ax_res.grid(alpha=0.25)
             ax_res.legend(loc="upper left")
+
+        if include_goals:
+            ax_goals = axes[idx]
+            idx += 1
+            ax_goals.plot(x, goals_for_plot, color="#8c564b", linewidth=1.9, label=goals_label)
+            ax_goals.set_ylabel("Goals")
+            ax_goals.grid(alpha=0.25)
+            ax_goals.legend(loc="upper left")
 
         if include_market_value:
             if "market_value" not in df.columns:
@@ -312,6 +344,16 @@ def plot_player_elo_timeline(
             line_labels.append(residual_label)
             axis_offset += 0.10
 
+        if include_goals:
+            ax_goals = ax1.twinx()
+            ax_goals.spines["right"].set_position(("axes", axis_offset))
+            h_goals, = ax_goals.plot(x, goals_for_plot, color="#8c564b", linewidth=1.6)
+            ax_goals.set_ylabel("Goals", color="#8c564b")
+            ax_goals.tick_params(axis="y", labelcolor="#8c564b")
+            line_handles.append(h_goals)
+            line_labels.append(goals_label)
+            axis_offset += 0.10
+
         if include_age:
             if "player_age_years" not in df.columns:
                 raise KeyError("`include_age=True` requires `player_age_years`.")
@@ -360,6 +402,8 @@ def plot_player_elo_timeline_interactive(
     smooth_window: int = 5,
     residual_col: str = "performance_residual",
     include_residual: bool = True,
+    goals_col: str = "goals",
+    include_goals: bool = True,
     include_age: bool = True,
     include_market_value: bool = True,
     use_subplots: bool = True,
@@ -369,6 +413,9 @@ def plot_player_elo_timeline_interactive(
     residual_spline: bool = True,
     residual_spline_s: Optional[float] = None,
     residual_spline_strength: float = 0.75,
+    goals_spline: bool = True,
+    goals_spline_s: Optional[float] = None,
+    goals_spline_strength: float = 0.75,
     show: bool = False,
 ) -> go.Figure:
     if "match_date" not in player_df.columns:
@@ -395,6 +442,19 @@ def plot_player_elo_timeline_interactive(
         if spline_used:
             residual_label = "Performance Residual (Spline)"
 
+    goals = _goals_series(df, goals_col) if include_goals else None
+    goals_for_plot = goals
+    goals_label = "Goals"
+    if include_goals and goals is not None and goals_spline:
+        goals_for_plot, goals_spline_used = _smoothing_spline_series(
+            x=x,
+            y=goals,
+            spline_s=goals_spline_s,
+            spline_strength=goals_spline_strength,
+        )
+        if goals_spline_used:
+            goals_label = "Goals (Spline)"
+
     baseline_x, baseline_ranking_smooth, baseline_window = _optional_baseline_ranking_series(
         baseline_player_df=baseline_player_df,
         baseline_col=baseline_elo_col,
@@ -404,7 +464,7 @@ def plot_player_elo_timeline_interactive(
     player_id_label = str(df.get("player_id", pd.Series(["?"])).iloc[0])
 
     if use_subplots:
-        rows = 1 + int(include_residual) + int(include_market_value) + int(include_age)
+        rows = 1 + int(include_residual) + int(include_goals) + int(include_market_value) + int(include_age)
         fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.05)
         row = 1
         fig.add_trace(
@@ -458,6 +518,21 @@ def plot_player_elo_timeline_interactive(
             )
             fig.add_hline(y=0.0, line_dash="dash", line_color="#999999", row=row, col=1)
             fig.update_yaxes(title_text="Residual", row=row, col=1)
+            row += 1
+
+        if include_goals:
+            fig.add_trace(
+                go.Scatter(
+                    x=x,
+                    y=goals_for_plot,
+                    mode="lines",
+                    name=goals_label,
+                    line=dict(color="#8c564b", width=1.9),
+                ),
+                row=row,
+                col=1,
+            )
+            fig.update_yaxes(title_text="Goals", row=row, col=1)
             row += 1
 
         if include_market_value:
@@ -528,6 +603,8 @@ def plot_player_elo_timeline_interactive(
         overlays: list[tuple[str, pd.Series, str, str]] = []
         if include_residual:
             overlays.append((residual_label, residual_for_plot, "Residual", "#d62728"))
+        if include_goals:
+            overlays.append((goals_label, goals_for_plot, "Goals", "#8c564b"))
         if include_market_value:
             if "market_value" not in df.columns:
                 raise KeyError("`include_market_value=True` requires `market_value`.")
@@ -572,7 +649,10 @@ def plot_player_elo_timeline_interactive(
         template="plotly_white",
         title=f"{player_label} (ID {player_id_label}) - Player Ranking Timeline",
         xaxis_title="Match Date",
-        height=360 + (220 * (int(include_age) + int(include_market_value))) if use_subplots else 520,
+        height=360
+        + (220 * (int(include_residual) + int(include_goals) + int(include_age) + int(include_market_value)))
+        if use_subplots
+        else 520,
     )
 
     if output_path:

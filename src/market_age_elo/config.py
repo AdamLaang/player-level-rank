@@ -22,6 +22,9 @@ class MarketAgeAdjustedEloConfig:
     beta_mv: float = 18.0
     beta_mv_team: float = 0.0
     beta_age: float = 1.2
+    beta_age_young: Optional[float] = None
+    beta_age_old: Optional[float] = None
+    age_penalty_mode: str = "quadratic"  # quadratic|absolute|asymmetric_quadratic
     peak_age_by_position: Dict[str, float] = field(
         default_factory=lambda: dict(DEFAULT_PEAK_AGE_BY_POSITION)
     )
@@ -107,6 +110,12 @@ class MarketAgeAdjustedEloConfig:
             raise ValueError("min_group_size_for_team_mv_norm must be >= 1")
         if self.home_advantage_mode not in {"symmetric", "home_only"}:
             raise ValueError("home_advantage_mode must be one of {'symmetric', 'home_only'}")
+        if self.age_penalty_mode not in {"quadratic", "absolute", "asymmetric_quadratic"}:
+            raise ValueError("age_penalty_mode must be one of {'quadratic', 'absolute', 'asymmetric_quadratic'}")
+        if self.beta_age_young is not None and self.beta_age_young < 0:
+            raise ValueError("beta_age_young must be >= 0 when set")
+        if self.beta_age_old is not None and self.beta_age_old < 0:
+            raise ValueError("beta_age_old must be >= 0 when set")
         if self.train_split_frac <= 0 or self.train_split_frac >= 1:
             raise ValueError("train_split_frac must be in (0,1)")
         if self.validation_split_frac <= 0 or self.validation_split_frac >= 1:

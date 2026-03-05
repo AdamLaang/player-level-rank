@@ -15,6 +15,8 @@ from .features import (
     assign_position_group,
 )
 from .model import (
+    compute_age_peak_distance,
+    compute_age_penalty_term,
     compute_age_peak_distance_sq,
     compute_effective_player_rating,
     compute_expected_player_score,
@@ -35,6 +37,8 @@ __all__ = [
     "compute_player_age_at_match",
     "compute_log_market_value",
     "compute_market_value_zscore",
+    "compute_age_peak_distance",
+    "compute_age_penalty_term",
     "compute_age_peak_distance_sq",
     "compute_effective_player_rating",
     "compute_expected_player_score",

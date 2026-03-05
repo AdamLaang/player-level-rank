@@ -9,7 +9,7 @@ import pandas as pd
 from .config import MarketAgeAdjustedEloConfig, as_config
 
 
-def compute_age_peak_distance_sq(
+def _compute_age_delta(
     player_age_years: Any,
     position_group: Any,
     peak_age_by_position: Optional[Mapping[str, float]] = None,
@@ -20,16 +20,95 @@ def compute_age_peak_distance_sq(
     if isinstance(position_group, pd.Series):
         peak = position_group.map(lambda pos: peak_map.get(pos, fallback_peak_age)).astype(float)
         age = pd.to_numeric(player_age_years, errors="coerce")
-        out = (age - peak) ** 2
-        out = out.where(age.notna(), 0.0)
-        return out
+        delta = age - peak
+        return delta.where(age.notna(), 0.0)
 
     pos = position_group
     peak = float(peak_map.get(pos, fallback_peak_age))
     if player_age_years is None or pd.isna(player_age_years):
         return 0.0
-    age_value = float(player_age_years)
-    return float((age_value - peak) ** 2)
+    return float(player_age_years) - peak
+
+
+def compute_age_peak_distance(
+    player_age_years: Any,
+    position_group: Any,
+    peak_age_by_position: Optional[Mapping[str, float]] = None,
+    fallback_peak_age: float = 27.0,
+    distance_mode: str = "quadratic",
+) -> Any:
+    if distance_mode not in {"quadratic", "absolute"}:
+        raise ValueError("distance_mode must be one of {'quadratic', 'absolute'}")
+    delta = _compute_age_delta(
+        player_age_years=player_age_years,
+        position_group=position_group,
+        peak_age_by_position=peak_age_by_position,
+        fallback_peak_age=fallback_peak_age,
+    )
+    if isinstance(delta, pd.Series):
+        if distance_mode == "quadratic":
+            return delta**2
+        return delta.abs()
+    if distance_mode == "quadratic":
+        return float(delta**2)
+    return float(abs(delta))
+
+
+def compute_age_peak_distance_sq(
+    player_age_years: Any,
+    position_group: Any,
+    peak_age_by_position: Optional[Mapping[str, float]] = None,
+    fallback_peak_age: float = 27.0,
+) -> Any:
+    return compute_age_peak_distance(
+        player_age_years=player_age_years,
+        position_group=position_group,
+        peak_age_by_position=peak_age_by_position,
+        fallback_peak_age=fallback_peak_age,
+        distance_mode="quadratic",
+    )
+
+
+def compute_age_penalty_term(
+    player_age_years: Any,
+    position_group: Any,
+    beta_age: float,
+    age_penalty_mode: str = "quadratic",
+    beta_age_young: Optional[float] = None,
+    beta_age_old: Optional[float] = None,
+    peak_age_by_position: Optional[Mapping[str, float]] = None,
+    fallback_peak_age: float = 27.0,
+) -> Any:
+    if age_penalty_mode not in {"quadratic", "absolute", "asymmetric_quadratic"}:
+        raise ValueError("age_penalty_mode must be one of {'quadratic', 'absolute', 'asymmetric_quadratic'}")
+
+    delta = _compute_age_delta(
+        player_age_years=player_age_years,
+        position_group=position_group,
+        peak_age_by_position=peak_age_by_position,
+        fallback_peak_age=fallback_peak_age,
+    )
+
+    beta_young = float(beta_age if beta_age_young is None or pd.isna(beta_age_young) else beta_age_young)
+    beta_old = float(beta_age if beta_age_old is None or pd.isna(beta_age_old) else beta_age_old)
+    beta_sym = float(beta_age)
+
+    if isinstance(delta, pd.Series):
+        if age_penalty_mode == "quadratic":
+            return beta_sym * (delta**2)
+        if age_penalty_mode == "absolute":
+            return beta_sym * delta.abs()
+        out = np.where(delta < 0.0, beta_young * np.square(delta), beta_old * np.square(delta))
+        return pd.Series(out, index=delta.index)
+
+    delta_f = float(delta)
+    if age_penalty_mode == "quadratic":
+        return float(beta_sym * (delta_f**2))
+    if age_penalty_mode == "absolute":
+        return float(beta_sym * abs(delta_f))
+    if delta_f < 0.0:
+        return float(beta_young * (delta_f**2))
+    return float(beta_old * (delta_f**2))
 
 
 def compute_effective_player_rating(
@@ -161,11 +240,20 @@ def run_player_elo_updates(
         pid = getattr(row, "player_id")
         pre = ratings[pid]
 
-        age_dist = getattr(row, "age_peak_distance_sq", 0.0)
+        age_penalty_term = compute_age_penalty_term(
+            player_age_years=getattr(row, "player_age_years", np.nan),
+            position_group=getattr(row, "position_group", None),
+            beta_age=cfg.beta_age,
+            age_penalty_mode=cfg.age_penalty_mode,
+            beta_age_young=cfg.beta_age_young,
+            beta_age_old=cfg.beta_age_old,
+            peak_age_by_position=cfg.peak_age_by_position,
+            fallback_peak_age=cfg.fallback_peak_age,
+        )
         z_mv = getattr(row, "z_mv", 0.0)
         z_mv_team = getattr(row, "z_mv_team_context", 0.0)
-        if pd.isna(age_dist):
-            age_dist = 0.0
+        if pd.isna(age_penalty_term):
+            age_penalty_term = 0.0
         if pd.isna(z_mv):
             z_mv = 0.0
         if pd.isna(z_mv_team):
@@ -177,10 +265,10 @@ def run_player_elo_updates(
             pre,
             z_mv,
             z_mv_team,
-            age_dist,
+            age_penalty_term,
             beta_mv=cfg.beta_mv,
             beta_mv_team=cfg.beta_mv_team,
-            beta_age=cfg.beta_age,
+            beta_age=1.0,
             use_market_age_adjustment=cfg.use_market_age_adjustment,
         )
 
@@ -251,7 +339,7 @@ def run_player_elo_updates(
                 mv_team_adjustments.append(cfg.beta_mv_team * float(z_mv_team))
             else:
                 mv_team_adjustments.append(0.0)
-            age_adjustments.append(-cfg.beta_age * float(age_dist))
+            age_adjustments.append(-float(age_penalty_term))
         else:
             mv_adjustments.append(0.0)
             mv_team_adjustments.append(0.0)

@@ -1,0 +1,2 @@
+# Override config to use absolute age distance instead of quadratic.
+age_penalty_mode: absolute

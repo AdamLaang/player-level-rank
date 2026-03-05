@@ -20,7 +20,7 @@ from market_age_elo.visualization import (
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Plot player ranking timeline with optional residual/age/market-value overlays"
+        description="Plot player ranking timeline with optional residual/goals/age/market-value overlays"
     )
     parser.add_argument(
         "--input-csv",
@@ -48,6 +48,11 @@ def main() -> None:
         help="Residual column to plot when residual is enabled",
     )
     parser.add_argument(
+        "--goals-col",
+        default="goals",
+        help="Goals column to plot when goals are enabled",
+    )
+    parser.add_argument(
         "--disable-residual-spline",
         action="store_true",
         help="Disable smoothing spline for residual series",
@@ -63,6 +68,23 @@ def main() -> None:
         type=float,
         default=0.75,
         help="Auto-smoothing strength when --residual-spline-s is not set",
+    )
+    parser.add_argument(
+        "--disable-goals-spline",
+        action="store_true",
+        help="Disable smoothing spline for goals series",
+    )
+    parser.add_argument(
+        "--goals-spline-s",
+        type=float,
+        default=None,
+        help="Optional smoothing factor `s` for goals spline fit",
+    )
+    parser.add_argument(
+        "--goals-spline-strength",
+        type=float,
+        default=0.75,
+        help="Auto-smoothing strength when --goals-spline-s is not set",
     )
     parser.add_argument(
         "--baseline-input-csv",
@@ -94,6 +116,11 @@ def main() -> None:
         "--hide-market-value",
         action="store_true",
         help="Do not include market-value line/panel",
+    )
+    parser.add_argument(
+        "--hide-goals",
+        action="store_true",
+        help="Do not include goals line/panel",
     )
     parser.add_argument(
         "--hide-residual",
@@ -150,6 +177,8 @@ def main() -> None:
             smooth_window=args.smooth_window,
             residual_col=args.residual_col,
             include_residual=not args.hide_residual,
+            goals_col=args.goals_col,
+            include_goals=not args.hide_goals,
             include_age=not args.hide_age,
             include_market_value=not args.hide_market_value,
             use_subplots=not args.overlay,
@@ -158,6 +187,9 @@ def main() -> None:
             residual_spline=not args.disable_residual_spline,
             residual_spline_s=args.residual_spline_s,
             residual_spline_strength=args.residual_spline_strength,
+            goals_spline=not args.disable_goals_spline,
+            goals_spline_s=args.goals_spline_s,
+            goals_spline_strength=args.goals_spline_strength,
             show=args.show,
         )
     else:
@@ -168,6 +200,8 @@ def main() -> None:
             smooth_window=args.smooth_window,
             residual_col=args.residual_col,
             include_residual=not args.hide_residual,
+            goals_col=args.goals_col,
+            include_goals=not args.hide_goals,
             include_age=not args.hide_age,
             include_market_value=not args.hide_market_value,
             use_subplots=not args.overlay,
@@ -176,6 +210,9 @@ def main() -> None:
             residual_spline=not args.disable_residual_spline,
             residual_spline_s=args.residual_spline_s,
             residual_spline_strength=args.residual_spline_strength,
+            goals_spline=not args.disable_goals_spline,
+            goals_spline_s=args.goals_spline_s,
+            goals_spline_strength=args.goals_spline_strength,
             show=args.show,
         )
     print(f"Saved plot: {out_path}")

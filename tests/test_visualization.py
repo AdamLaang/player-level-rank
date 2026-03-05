@@ -33,6 +33,7 @@ class TestVisualization(unittest.TestCase):
                     "match_date": "2024-08-01T12:00:00+00:00",
                     "player_elo_post": 1510.0,
                     "performance_residual": 0.12,
+                    "goals": 1,
                     "player_age_years": 24.2,
                     "market_value": 20_000_000,
                 },
@@ -43,6 +44,7 @@ class TestVisualization(unittest.TestCase):
                     "match_date": "2024-08-08T12:00:00+00:00",
                     "player_elo_post": 1522.0,
                     "performance_residual": -0.03,
+                    "goals": 0,
                     "player_age_years": 24.3,
                     "market_value": 22_000_000,
                 },
@@ -53,6 +55,7 @@ class TestVisualization(unittest.TestCase):
                     "match_date": "2024-08-01T12:00:00+00:00",
                     "player_elo_post": 1495.0,
                     "performance_residual": -0.11,
+                    "goals": 0,
                     "player_age_years": 26.2,
                     "market_value": 15_000_000,
                 },
@@ -70,6 +73,7 @@ class TestVisualization(unittest.TestCase):
                     "match_date": "2024-08-01T12:00:00+00:00",
                     "player_elo_post": 1505.0,
                     "performance_residual": 0.20,
+                    "goals": 1,
                     "player_age_years": 24.1,
                     "market_value": 20_000_000,
                 },
@@ -80,6 +84,7 @@ class TestVisualization(unittest.TestCase):
                     "match_date": "2024-08-08T12:00:00+00:00",
                     "player_elo_post": 1515.0,
                     "performance_residual": -0.10,
+                    "goals": 0,
                     "player_age_years": 24.2,
                     "market_value": 21_000_000,
                 },
@@ -90,6 +95,7 @@ class TestVisualization(unittest.TestCase):
                     "match_date": "2024-08-15T12:00:00+00:00",
                     "player_elo_post": 1528.0,
                     "performance_residual": 0.15,
+                    "goals": 1,
                     "player_age_years": 24.3,
                     "market_value": 22_000_000,
                 },
@@ -100,6 +106,7 @@ class TestVisualization(unittest.TestCase):
                     "match_date": "2024-08-22T12:00:00+00:00",
                     "player_elo_post": 1536.0,
                     "performance_residual": -0.08,
+                    "goals": 0,
                     "player_age_years": 24.4,
                     "market_value": 23_000_000,
                 },
@@ -110,6 +117,7 @@ class TestVisualization(unittest.TestCase):
                     "match_date": "2024-08-29T12:00:00+00:00",
                     "player_elo_post": 1542.0,
                     "performance_residual": 0.10,
+                    "goals": 1,
                     "player_age_years": 24.5,
                     "market_value": 24_000_000,
                 },
@@ -171,6 +179,7 @@ class TestVisualization(unittest.TestCase):
         self.assertIn("Player Ranking (Raw)", trace_names)
         self.assertTrue(any(name and "Smoothed" in name for name in trace_names))
         self.assertIn("Performance Residual", trace_names)
+        self.assertIn("Goals", trace_names)
         self.assertEqual(trace_names[-1], "Age")
 
     def test_interactive_supports_baseline_and_residual_spline(self) -> None:
@@ -187,17 +196,20 @@ class TestVisualization(unittest.TestCase):
             smooth_window=3,
             residual_col="performance_residual",
             include_residual=True,
+            include_goals=True,
             include_age=False,
             include_market_value=False,
             baseline_player_df=baseline_df,
             baseline_elo_col="player_elo_post",
             residual_spline=True,
+            goals_spline=True,
             use_subplots=True,
             show=False,
         )
 
         trace_names = [trace.name for trace in fig.data]
         self.assertIn("Performance Residual (Spline)", trace_names)
+        self.assertIn("Goals (Spline)", trace_names)
         self.assertIn("Baseline Ranking (Smoothed, window=3)", trace_names)
 
 

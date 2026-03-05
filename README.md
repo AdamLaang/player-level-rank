@@ -17,7 +17,7 @@ For each player-match row:
 R_eff = R_player_pre
       + beta_mv * z_mv
       + beta_mv_team * z_mv_team_context
-      - beta_age * (age - peak_age_pos)^2
+      - beta_age * age_distance
 ```
 
 ```text
@@ -26,6 +26,11 @@ residual = S_observed - E
 ```
 
 where `S_observed` is the player performance target (`scored_binary` by default).
+
+`age_distance` is controlled by `age_penalty_mode`:
+- `quadratic` (default): `(age - peak_age_pos)^2`
+- `absolute`: `|age - peak_age_pos|`
+- `asymmetric_quadratic`: `beta_age_young*(peak-age)^2` for younger-than-peak and `beta_age_old*(age-peak)^2` for older-than-peak
 
 ## How Ranking Updates Work
 
@@ -48,10 +53,15 @@ with:
 - `performance_residual < 0`: underperformance vs expectation
 - `effective_player_rating`: pre-match ranking after age/MV adjustments
 - `market_value_adjustment`, `market_value_team_adjustment`, `age_adjustment`: decomposition of what shifted ranking expectation
+- `player_season_diagnostics.csv` now includes a stabilized season signal:
+  - `eb_shrunk_residual`: empirical-Bayes shrunk residual mean (less noisy than raw average)
+  - `eb_prob_overperforming`: posterior probability a player truly overperformed that season
+  - `eb_signal`: `likely_overperforming`, `likely_underperforming`, or `uncertain`
+- `player_multiseason_diagnostics.csv` aggregates these season signals across seasons with precision weighting for systematic search.
 
 ## Example Plot (Mohamed Salah)
 
-Raw + smoothed player ranking over time, with market value and age (age on the lowest panel):
+Adjusted ranking (raw + smoothed) with baseline overlay (dashed), spline-smoothed residuals, spline-smoothed goals (just above market value), market value, and age (age on the lowest panel):
 
 ![Mohamed Salah Player Ranking Timeline](docs/assets/mohamed_salah_player_ranking_timeline.png)
 
@@ -83,6 +93,26 @@ python3 scripts/run_backtest_market_age_adjusted_elo.py \
   --fixtures data/elo_base_fixtures.csv \
   --config config/market_age_adjusted_elo.yaml \
   --output-dir outputs/market_age_adjusted_elo
+```
+
+Run with absolute-age penalty instead of quadratic:
+
+```bash
+python3 scripts/run_backtest_market_age_adjusted_elo.py \
+  --players data/elo_base_players.csv \
+  --fixtures data/elo_base_fixtures.csv \
+  --config config/market_age_adjusted_elo_absolute_age.yaml \
+  --output-dir outputs/market_age_adjusted_elo_absolute_age
+```
+
+Run with asymmetric quadratic age penalty:
+
+```bash
+python3 scripts/run_backtest_market_age_adjusted_elo.py \
+  --players data/elo_base_players.csv \
+  --fixtures data/elo_base_fixtures.csv \
+  --config config/market_age_adjusted_elo_asymmetric_age.yaml \
+  --output-dir outputs/market_age_adjusted_elo_asymmetric_age
 ```
 
 ### Run beta grid search
@@ -132,8 +162,10 @@ python3 scripts/plot_player_elo_timeline.py \
   --player-id 4125 \
   --ranking-col player_elo_post \
   --residual-col performance_residual \
+  --goals-col goals \
   --smooth-window 7 \
   --residual-spline-strength 0.75 \
+  --goals-spline-strength 0.75 \
   --backend plotly \
   --output-path outputs/plots/mohamed_salah_player_ranking_timeline_20260305.html
 ```
@@ -150,7 +182,84 @@ python3 scripts/plot_player_elo_timeline.py \
 ```
 
 - Residual smoothing spline is enabled by default; disable with `--disable-residual-spline`.
+- Goals smoothing spline is enabled by default; disable with `--disable-goals-spline`.
 - If `--baseline-input-csv` is omitted, the script auto-detects `player_match_outputs_baseline.csv` next to the input CSV when available.
+
+### Find Over/Underperformers (stabilized)
+
+Rank all players by stabilized season and multi-season over/under-performance:
+
+```bash
+python3 scripts/find_over_underperformers.py \
+  --backtest-dir outputs/market_age_adjusted_elo \
+  --mode all \
+  --top-n 20
+```
+
+Inspect one player across seasons:
+
+```bash
+python3 scripts/find_over_underperformers.py \
+  --backtest-dir outputs/market_age_adjusted_elo \
+  --mode player \
+  --player-name "Mohamed Salah"
+```
+
+Useful options:
+- `--season 2024/2025` to filter season output.
+- `--season-scope within` (default) to recompute diagnostics inside the selected season only.
+- `--season-scope global_filter` to keep global diagnostics and only filter rows to that season.
+- `--min-season-minutes`, `--min-season-matches` to reduce noise.
+- `--min-multiseason-minutes`, `--min-multiseason-seasons` for long-run screening.
+- `--signal-only` to keep only non-uncertain labels.
+- `--output-dir outputs/reports` to save report tables as CSV.
+
+### Optimize peak age by league
+
+Grid-search the best peak age for a selected position group within each league:
+
+```bash
+python3 scripts/optimize_peak_age_by_league.py \
+  --players data/elo_base_players.csv \
+  --fixtures data/elo_base_fixtures.csv \
+  --config config/market_age_adjusted_elo_asymmetric_age.yaml \
+  --peak-age-grid 22,23,24,25,26,27,28,29,30 \
+  --position-group ATT \
+  --variant market_age \
+  --objective-split validation \
+  --objective-metric log_loss \
+  --output-dir outputs/peak_age_by_league_asymmetric
+```
+
+Compare against the quadratic model:
+
+```bash
+python3 scripts/optimize_peak_age_by_league.py \
+  --players data/elo_base_players.csv \
+  --fixtures data/elo_base_fixtures.csv \
+  --config config/market_age_adjusted_elo.yaml \
+  --peak-age-grid 22,23,24,25,26,27,28,29,30 \
+  --position-group ATT \
+  --variant market_age \
+  --objective-split validation \
+  --objective-metric log_loss \
+  --output-dir outputs/peak_age_by_league_quadratic
+```
+
+Outputs:
+- `peak_age_search_results.csv`: all league x peak-age candidates.
+- `peak_age_best_by_league.csv`: best peak age per league.
+- `peak_age_skipped_leagues.csv`: leagues skipped due to min-size filters.
+- `peak_age_search_summary.json`: run metadata.
+
+Latest result (run date: March 5, 2026, objective: validation `log_loss`, position group: `ATT`):
+
+| Model | League | Best peak age | Validation log loss | Test log loss |
+| --- | --- | ---: | ---: | ---: |
+| Asymmetric quadratic | Premier League | 30.0 | 0.504229 | 0.472449 |
+| Quadratic | Premier League | 30.0 | 0.529638 | 0.496286 |
+
+Detailed tables are documented in `docs/peak_age_by_league_summary_20260305.md`.
 
 ## Notes
 
