@@ -72,13 +72,13 @@ Detailed tables are documented in `docs/peak_age_by_league_summary_20260305.md`.
 
 ## Example Plot (Mohamed Salah)
 
-Adjusted ranking (raw + smoothed) with baseline overlay (dashed), spline-smoothed residuals, spline-smoothed goals (just above market value), market value, and age (age on the lowest panel):
+Adjusted ranking (raw + smoothed) with baseline overlay (dashed), spline-smoothed residuals, spline-smoothed goals (just above market value), market value, and age (age on the lowest panel), using the current best model (`asymmetric_quadratic`, `ATT peak_age=30`):
 
-![Mohamed Salah Player Ranking Timeline](docs/assets/mohamed_salah_player_ranking_timeline.png)
+![Mohamed Salah Player Ranking Timeline](docs/assets/mohamed_salah_player_ranking_timeline_best_model_20260305.png)
 
 Interactive version:
-- [docs/assets/mohamed_salah_player_ranking_timeline_20260305.html](docs/assets/mohamed_salah_player_ranking_timeline_20260305.html)
-- [outputs/plots/mohamed_salah_player_ranking_timeline_20260305.html](outputs/plots/mohamed_salah_player_ranking_timeline_20260305.html)
+- [docs/assets/mohamed_salah_player_ranking_timeline_best_model_20260305.html](docs/assets/mohamed_salah_player_ranking_timeline_best_model_20260305.html)
+- [outputs/plots/mohamed_salah_player_ranking_timeline_best_model_20260305.html](outputs/plots/mohamed_salah_player_ranking_timeline_best_model_20260305.html)
 
 ## Optimization Objective (Loss)
 
@@ -168,8 +168,8 @@ python3 scripts/run_backtest_market_age_adjusted_elo.py \
 
 ```bash
 python3 scripts/plot_player_elo_timeline.py \
-  --input-csv outputs/market_age_adjusted_elo_grid_wide_mv_k_rerun_20260304/best_model_backtest/player_match_outputs_market_age.csv \
-  --baseline-input-csv outputs/market_age_adjusted_elo_grid_wide_mv_k_rerun_20260304/best_model_backtest/player_match_outputs_baseline.csv \
+  --input-csv outputs/market_age_adjusted_elo_asymmetric_peak30_att/player_match_outputs_market_age.csv \
+  --baseline-input-csv outputs/market_age_adjusted_elo_asymmetric_peak30_att/player_match_outputs_baseline.csv \
   --player-id 4125 \
   --ranking-col player_elo_post \
   --residual-col performance_residual \
@@ -178,14 +178,14 @@ python3 scripts/plot_player_elo_timeline.py \
   --residual-spline-strength 0.75 \
   --goals-spline-strength 0.75 \
   --backend plotly \
-  --output-path outputs/plots/mohamed_salah_player_ranking_timeline_20260305.html
+  --output-path outputs/plots/mohamed_salah_player_ranking_timeline_best_model_20260305.html
 ```
 
 ### Overlay mode (single figure, multi-axis)
 
 ```bash
 python3 scripts/plot_player_elo_timeline.py \
-  --input-csv outputs/market_age_adjusted_elo_grid_wide_mv_k_rerun_20260304/best_model_backtest/player_match_outputs_market_age.csv \
+  --input-csv outputs/market_age_adjusted_elo_asymmetric_peak30_att/player_match_outputs_market_age.csv \
   --player-name "Mohamed Salah" \
   --backend plotly \
   --overlay \

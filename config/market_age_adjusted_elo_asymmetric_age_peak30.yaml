@@ -1,0 +1,8 @@
+# Best current method from peak-age-by-league search:
+# asymmetric quadratic age penalty with ATT peak age set to 30.
+age_penalty_mode: asymmetric_quadratic
+beta_age_young: 4.0
+beta_age_old: 1.0
+peak_age_by_position:
+  ATT: 30
+experiment_id: market_age_adjusted_elo_asymmetric_att_peak30
