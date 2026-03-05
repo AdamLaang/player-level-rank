@@ -59,6 +59,17 @@ with:
   - `eb_signal`: `likely_overperforming`, `likely_underperforming`, or `uncertain`
 - `player_multiseason_diagnostics.csv` aggregates these season signals across seasons with precision weighting for systematic search.
 
+## Latest Method Results (March 5, 2026)
+
+Objective: validation `log_loss`, position group: `ATT`.
+
+| Model | League | Best peak age | Validation log loss | Test log loss |
+| --- | --- | ---: | ---: | ---: |
+| Asymmetric quadratic | Premier League | 30.0 | 0.504229 | 0.472449 |
+| Quadratic | Premier League | 30.0 | 0.529638 | 0.496286 |
+
+Detailed tables are documented in `docs/peak_age_by_league_summary_20260305.md`.
+
 ## Example Plot (Mohamed Salah)
 
 Adjusted ranking (raw + smoothed) with baseline overlay (dashed), spline-smoothed residuals, spline-smoothed goals (just above market value), market value, and age (age on the lowest panel):
@@ -251,15 +262,6 @@ Outputs:
 - `peak_age_best_by_league.csv`: best peak age per league.
 - `peak_age_skipped_leagues.csv`: leagues skipped due to min-size filters.
 - `peak_age_search_summary.json`: run metadata.
-
-Latest result (run date: March 5, 2026, objective: validation `log_loss`, position group: `ATT`):
-
-| Model | League | Best peak age | Validation log loss | Test log loss |
-| --- | --- | ---: | ---: | ---: |
-| Asymmetric quadratic | Premier League | 30.0 | 0.504229 | 0.472449 |
-| Quadratic | Premier League | 30.0 | 0.529638 | 0.496286 |
-
-Detailed tables are documented in `docs/peak_age_by_league_summary_20260305.md`.
 
 ## Notes
 
