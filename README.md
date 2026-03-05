@@ -1,4 +1,4 @@
-# Player ELO (Market + Age Adjusted)
+# Player Ranking (Market + Age Adjusted)
 
 Attacker-focused, config-driven player ranking model that compares observed player performance to an expectation built from:
 
@@ -51,7 +51,7 @@ with:
 
 ## Example Plot (Mohamed Salah)
 
-Adjusted ranking (raw + smoothed) with baseline ranking overlay (dashed), spline-smoothed performance residual, market value, and age (age on the lowest panel):
+Raw + smoothed player ranking over time, with market value and age (age on the lowest panel):
 
 ![Mohamed Salah Player Ranking Timeline](docs/assets/mohamed_salah_player_ranking_timeline.png)
 
