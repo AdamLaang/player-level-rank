@@ -32,6 +32,7 @@ class TestVisualization(unittest.TestCase):
                     "player_name": "Attacker A",
                     "match_date": "2024-08-01T12:00:00+00:00",
                     "player_elo_post": 1510.0,
+                    "performance_residual": 0.12,
                     "player_age_years": 24.2,
                     "market_value": 20_000_000,
                 },
@@ -41,6 +42,7 @@ class TestVisualization(unittest.TestCase):
                     "player_name": "Attacker A",
                     "match_date": "2024-08-08T12:00:00+00:00",
                     "player_elo_post": 1522.0,
+                    "performance_residual": -0.03,
                     "player_age_years": 24.3,
                     "market_value": 22_000_000,
                 },
@@ -50,8 +52,66 @@ class TestVisualization(unittest.TestCase):
                     "player_name": "Attacker B",
                     "match_date": "2024-08-01T12:00:00+00:00",
                     "player_elo_post": 1495.0,
+                    "performance_residual": -0.11,
                     "player_age_years": 26.2,
                     "market_value": 15_000_000,
+                },
+            ]
+        )
+
+    @staticmethod
+    def _sample_player_df_long() -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                {
+                    "match_id": 10,
+                    "player_id": 100,
+                    "player_name": "Attacker A",
+                    "match_date": "2024-08-01T12:00:00+00:00",
+                    "player_elo_post": 1505.0,
+                    "performance_residual": 0.20,
+                    "player_age_years": 24.1,
+                    "market_value": 20_000_000,
+                },
+                {
+                    "match_id": 11,
+                    "player_id": 100,
+                    "player_name": "Attacker A",
+                    "match_date": "2024-08-08T12:00:00+00:00",
+                    "player_elo_post": 1515.0,
+                    "performance_residual": -0.10,
+                    "player_age_years": 24.2,
+                    "market_value": 21_000_000,
+                },
+                {
+                    "match_id": 12,
+                    "player_id": 100,
+                    "player_name": "Attacker A",
+                    "match_date": "2024-08-15T12:00:00+00:00",
+                    "player_elo_post": 1528.0,
+                    "performance_residual": 0.15,
+                    "player_age_years": 24.3,
+                    "market_value": 22_000_000,
+                },
+                {
+                    "match_id": 13,
+                    "player_id": 100,
+                    "player_name": "Attacker A",
+                    "match_date": "2024-08-22T12:00:00+00:00",
+                    "player_elo_post": 1536.0,
+                    "performance_residual": -0.08,
+                    "player_age_years": 24.4,
+                    "market_value": 23_000_000,
+                },
+                {
+                    "match_id": 14,
+                    "player_id": 100,
+                    "player_name": "Attacker A",
+                    "match_date": "2024-08-29T12:00:00+00:00",
+                    "player_elo_post": 1542.0,
+                    "performance_residual": 0.10,
+                    "player_age_years": 24.5,
+                    "market_value": 24_000_000,
                 },
             ]
         )
@@ -110,7 +170,35 @@ class TestVisualization(unittest.TestCase):
         trace_names = [trace.name for trace in _fig.data]
         self.assertIn("Player Ranking (Raw)", trace_names)
         self.assertTrue(any(name and "Smoothed" in name for name in trace_names))
+        self.assertIn("Performance Residual", trace_names)
         self.assertEqual(trace_names[-1], "Age")
+
+    def test_interactive_supports_baseline_and_residual_spline(self) -> None:
+        df = self._sample_player_df_long()
+        df["match_date"] = pd.to_datetime(df["match_date"], utc=True)
+        player_df = select_player_timeseries(df, player_id=100)
+        baseline_df = player_df.copy()
+        baseline_df["player_elo_post"] = baseline_df["player_elo_post"] - 18.0
+
+        fig = plot_player_elo_timeline_interactive(
+            player_df=player_df,
+            output_path=None,
+            elo_col="player_elo_post",
+            smooth_window=3,
+            residual_col="performance_residual",
+            include_residual=True,
+            include_age=False,
+            include_market_value=False,
+            baseline_player_df=baseline_df,
+            baseline_elo_col="player_elo_post",
+            residual_spline=True,
+            use_subplots=True,
+            show=False,
+        )
+
+        trace_names = [trace.name for trace in fig.data]
+        self.assertIn("Performance Residual (Spline)", trace_names)
+        self.assertIn("Baseline Ranking (Smoothed, window=3)", trace_names)
 
 
 if __name__ == "__main__":

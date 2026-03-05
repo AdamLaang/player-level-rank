@@ -51,12 +51,27 @@ with:
 
 ## Example Plot (Mohamed Salah)
 
-Raw + smoothed player ranking over time, with market value and age (age on the lowest panel):
+Adjusted ranking (raw + smoothed) with baseline ranking overlay (dashed), spline-smoothed performance residual, market value, and age (age on the lowest panel):
 
 ![Mohamed Salah Player Ranking Timeline](docs/assets/mohamed_salah_player_ranking_timeline.png)
 
 Interactive version:
-- `outputs/plots/mohamed_salah_player_ranking_timeline_20260304.html`
+- [docs/assets/mohamed_salah_player_ranking_timeline_20260305.html](docs/assets/mohamed_salah_player_ranking_timeline_20260305.html)
+- [outputs/plots/mohamed_salah_player_ranking_timeline_20260305.html](outputs/plots/mohamed_salah_player_ranking_timeline_20260305.html)
+
+## Optimization Objective (Loss)
+
+Parameter search (`--grid-search` with `--search-strategy grid|bayes`) selects parameters by minimizing `objective_value` on the chosen split.
+
+- Default objective is `validation` + `log_loss` (`--objective-split validation --objective-metric log_loss`).
+- Supported objective metrics:
+  - `log_loss` (binary cross-entropy on `observed_performance_score` vs `expected_score`)
+  - `brier_score` (mean squared probability error)
+  - `mean_residual` (mean of `performance_residual`)
+- Internal optimization target:
+  - `objective_value = metric` for `log_loss` and `brier_score`
+  - `objective_value = abs(mean_residual)` for `mean_residual`
+- Ties are broken by lower `test_log_loss`, then parameter order.
 
 ## How To Use
 
@@ -113,11 +128,14 @@ python3 scripts/run_backtest_market_age_adjusted_elo.py \
 ```bash
 python3 scripts/plot_player_elo_timeline.py \
   --input-csv outputs/market_age_adjusted_elo_grid_wide_mv_k_rerun_20260304/best_model_backtest/player_match_outputs_market_age.csv \
+  --baseline-input-csv outputs/market_age_adjusted_elo_grid_wide_mv_k_rerun_20260304/best_model_backtest/player_match_outputs_baseline.csv \
   --player-id 4125 \
   --ranking-col player_elo_post \
+  --residual-col performance_residual \
   --smooth-window 7 \
+  --residual-spline-strength 0.75 \
   --backend plotly \
-  --output-path outputs/plots/mohamed_salah_player_ranking_timeline_20260304.html
+  --output-path outputs/plots/mohamed_salah_player_ranking_timeline_20260305.html
 ```
 
 ### Overlay mode (single figure, multi-axis)
@@ -130,6 +148,9 @@ python3 scripts/plot_player_elo_timeline.py \
   --overlay \
   --output-path outputs/plots/mohamed_salah_overlay.html
 ```
+
+- Residual smoothing spline is enabled by default; disable with `--disable-residual-spline`.
+- If `--baseline-input-csv` is omitted, the script auto-detects `player_match_outputs_baseline.csv` next to the input CSV when available.
 
 ## Notes
 

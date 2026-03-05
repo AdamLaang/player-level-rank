@@ -20,7 +20,7 @@ from market_age_elo.visualization import (
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Plot player ranking timeline with optional age/market-value overlays"
+        description="Plot player ranking timeline with optional residual/age/market-value overlays"
     )
     parser.add_argument(
         "--input-csv",
@@ -41,6 +41,38 @@ def main() -> None:
         type=int,
         default=5,
         help="Rolling window size for the smoothed player ranking line",
+    )
+    parser.add_argument(
+        "--residual-col",
+        default="performance_residual",
+        help="Residual column to plot when residual is enabled",
+    )
+    parser.add_argument(
+        "--disable-residual-spline",
+        action="store_true",
+        help="Disable smoothing spline for residual series",
+    )
+    parser.add_argument(
+        "--residual-spline-s",
+        type=float,
+        default=None,
+        help="Optional smoothing factor `s` for residual spline fit",
+    )
+    parser.add_argument(
+        "--residual-spline-strength",
+        type=float,
+        default=0.75,
+        help="Auto-smoothing strength when --residual-spline-s is not set",
+    )
+    parser.add_argument(
+        "--baseline-input-csv",
+        default=None,
+        help="Optional baseline variant CSV to overlay (auto-detected if omitted)",
+    )
+    parser.add_argument(
+        "--baseline-ranking-col",
+        default="player_elo_post",
+        help="Baseline ranking column to overlay",
     )
     parser.add_argument(
         "--backend",
@@ -64,6 +96,11 @@ def main() -> None:
         help="Do not include market-value line/panel",
     )
     parser.add_argument(
+        "--hide-residual",
+        action="store_true",
+        help="Do not include performance residual line/panel",
+    )
+    parser.add_argument(
         "--overlay",
         action="store_true",
         help="Overlay series on multiple y-axes instead of stacked subplots",
@@ -78,6 +115,24 @@ def main() -> None:
 
     df = load_player_timeline_data(args.input_csv)
     player_df = select_player_timeseries(df, player_id=args.player_id, player_name=args.player_name)
+    baseline_player_df = None
+    baseline_input_path: Path | None = None
+    if args.baseline_input_csv:
+        baseline_input_path = Path(args.baseline_input_csv)
+        if not baseline_input_path.exists():
+            raise FileNotFoundError(f"Baseline CSV not found: {baseline_input_path}")
+    else:
+        inferred_baseline = Path(args.input_csv).with_name("player_match_outputs_baseline.csv")
+        if inferred_baseline.exists() and inferred_baseline.resolve() != Path(args.input_csv).resolve():
+            baseline_input_path = inferred_baseline
+
+    if baseline_input_path is not None and baseline_input_path.exists():
+        baseline_df = load_player_timeline_data(baseline_input_path)
+        baseline_player_df = select_player_timeseries(
+            baseline_df,
+            player_id=args.player_id,
+            player_name=args.player_name,
+        )
 
     if args.output_path:
         out_path = Path(args.output_path)
@@ -93,9 +148,16 @@ def main() -> None:
             output_path=out_path,
             elo_col=args.ranking_col,
             smooth_window=args.smooth_window,
+            residual_col=args.residual_col,
+            include_residual=not args.hide_residual,
             include_age=not args.hide_age,
             include_market_value=not args.hide_market_value,
             use_subplots=not args.overlay,
+            baseline_player_df=baseline_player_df,
+            baseline_elo_col=args.baseline_ranking_col,
+            residual_spline=not args.disable_residual_spline,
+            residual_spline_s=args.residual_spline_s,
+            residual_spline_strength=args.residual_spline_strength,
             show=args.show,
         )
     else:
@@ -104,9 +166,16 @@ def main() -> None:
             output_path=out_path,
             elo_col=args.ranking_col,
             smooth_window=args.smooth_window,
+            residual_col=args.residual_col,
+            include_residual=not args.hide_residual,
             include_age=not args.hide_age,
             include_market_value=not args.hide_market_value,
             use_subplots=not args.overlay,
+            baseline_player_df=baseline_player_df,
+            baseline_elo_col=args.baseline_ranking_col,
+            residual_spline=not args.disable_residual_spline,
+            residual_spline_s=args.residual_spline_s,
+            residual_spline_strength=args.residual_spline_strength,
             show=args.show,
         )
     print(f"Saved plot: {out_path}")
